@@ -9,7 +9,7 @@ import { Character } from './types';
  * Domyślna postać (placeholder)
  * Wypełnij to gdy będziesz miał:
  * - System prompt postaci
- * - Voice ID z ElevenLabs
+ * - (opcjonalnie) Voice ID (legacy po ElevenLabs)
  * - Filmy animacji
  */
 export const defaultCharacter: Character = {
@@ -36,10 +36,8 @@ Assistant: "Świetnie! Cieszę się, że mogę z tobą porozmawiać. Co cię tut
 User: "Opowiedz mi o sobie"
 Assistant: "Jestem postacią z tego przedstawienia. Moją pasją jest łączenie ludzi przez sztukę. A ty, co lubisz robić?"`,
   
-  // TODO: Zamień na prawdziwy Voice ID z ElevenLabs!
-  // Przykład: '21m00Tcm4TlvDq8ikWAM' (Rachel)
-  // Idź na elevenlabs.io → Voices → wybierz głos → skopiuj Voice ID
-  voiceId: 'JBFqnCBsd6RMkjVDRZzb', // ⚠️ ZMIEŃ TO!
+  // Legacy: kiedyś używane w trybie ElevenLabs. W Realtime-only może zostać dowolna wartość.
+  voiceId: 'legacy',
   
   // Ścieżki do filmów animacji
   videoSet: {

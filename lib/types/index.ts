@@ -8,16 +8,6 @@
 export type AppState = 'waiting' | 'listening' | 'processing' | 'responding';
 
 /**
- * Substany podczas przetwarzania
- */
-export type ProcessingSubState = 'transcribing' | 'thinking' | 'synthesizing';
-
-/**
- * Tryb komunikacji głosowej
- */
-export type VoiceMode = 'elevenlabs' | 'realtime';
-
-/**
  * Wiadomość w konwersacji
  */
 export interface Message {
@@ -36,7 +26,7 @@ export interface Character {
   name: string;
   description: string;
   systemPrompt: string;      // Instrukcje jak ma rozmawiać
-  voiceId: string;            // ID głosu z ElevenLabs
+  voiceId: string;            // Legacy/optional (nieużywane w Realtime-only)
   videoSet: {
     waiting: string;          // Ścieżka do waiting.mp4
     listening: string;        // Ścieżka do listening.mp4
@@ -47,16 +37,6 @@ export interface Character {
     maxTokens: number;        // Max długość odpowiedzi
     model: string;            // gpt-4o, gpt-4-turbo, claude-3-opus, etc.
   };
-}
-
-/**
- * Ustawienia głosu ElevenLabs
- */
-export interface ElevenLabsVoiceSettings {
-  stability: number;          // 0.0-1.0
-  similarity_boost: number;   // 0.0-1.0
-  style?: number;            // 0.0-1.0 (opcjonalne)
-  use_speaker_boost?: boolean;
 }
 
 /**
@@ -91,48 +71,20 @@ export interface LLMChatResponse {
 }
 
 /**
- * Request do API TTS
- */
-export interface TTSRequest {
-  text: string;
-  voiceId: string;
-  voiceSettings?: ElevenLabsVoiceSettings;
-}
-
-/**
- * Response z API TTS
- */
-export interface TTSResponse {
-  audioUrl: string;
-}
-
-/**
  * Stan Zustand store
  */
 export interface AppStore {
   // Stan aplikacji
   state: AppState;
-  processingSubState: ProcessingSubState | null;
   
   // Dane konwersacji
   messages: Message[];
   currentCharacter: Character | null;
   
-  // Audio state
-  isRecording: boolean;
-  isPlaying: boolean;
-  
-  // Voice mode (ElevenLabs vs OpenAI Realtime)
-  voiceMode: VoiceMode;
-  
   // Actions
   setState: (state: AppState) => void;
-  setProcessingSubState: (subState: ProcessingSubState | null) => void;
   addMessage: (message: Message) => void;
   setCurrentCharacter: (character: Character) => void;
-  setIsRecording: (isRecording: boolean) => void;
-  setIsPlaying: (isPlaying: boolean) => void;
-  setVoiceMode: (mode: VoiceMode) => void;
   resetConversation: () => void;
 }
 

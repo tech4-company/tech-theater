@@ -3,7 +3,7 @@
 // ============================================================================
 
 import { create } from 'zustand';
-import { AppStore, AppState, ProcessingSubState, Message, Character, VoiceMode } from './types';
+import { AppStore, AppState, Message, Character } from './types';
 
 /**
  * Główny store aplikacji używający Zustand
@@ -11,18 +11,11 @@ import { AppStore, AppState, ProcessingSubState, Message, Character, VoiceMode }
 export const useAppStore = create<AppStore>((set) => ({
   // Stan początkowy
   state: 'waiting',
-  processingSubState: null,
   messages: [],
   currentCharacter: null,
-  isRecording: false,
-  isPlaying: false,
-  voiceMode: 'realtime', // Prefer Realtime API by default
 
   // Actions
   setState: (state: AppState) => set({ state }),
-  
-  setProcessingSubState: (subState: ProcessingSubState | null) => 
-    set({ processingSubState: subState }),
   
   addMessage: (message: Message) => 
     set((state) => ({ 
@@ -32,22 +25,10 @@ export const useAppStore = create<AppStore>((set) => ({
   setCurrentCharacter: (character: Character) => 
     set({ currentCharacter: character }),
   
-  setIsRecording: (isRecording: boolean) => 
-    set({ isRecording }),
-  
-  setIsPlaying: (isPlaying: boolean) => 
-    set({ isPlaying }),
-  
-  setVoiceMode: (mode: VoiceMode) => 
-    set({ voiceMode: mode }),
-  
   resetConversation: () => 
     set({ 
       messages: [],
       state: 'waiting',
-      processingSubState: null,
-      isRecording: false,
-      isPlaying: false,
     }),
 }));
 

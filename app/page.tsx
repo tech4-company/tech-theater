@@ -6,7 +6,6 @@
 
 import { useEffect, useState } from 'react';
 import { VideoPlayer } from './components/VideoPlayer';
-import { VoiceControls } from './components/VoiceControls';
 import { VoiceControlsRealtime } from './components/VoiceControlsRealtime';
 import { AudioPermissionGate } from './components/AudioPermissionGate';
 import { useAppStore } from '@/lib/store';
@@ -15,7 +14,6 @@ import { getDefaultCharacter } from '@/lib/characters';
 export default function Home() {
   const setCurrentCharacter = useAppStore((s) => s.setCurrentCharacter);
   const currentCharacter = useAppStore((s) => s.currentCharacter);
-  const voiceMode = useAppStore((s) => s.voiceMode);
 
   // Ustaw domyślną postać przy starcie
   useEffect(() => {
@@ -51,12 +49,8 @@ export default function Home() {
 
       {/* Controls - Fixed at Bottom */}
       <div className="fixed bottom-0 left-0 right-0 bg-gradient-to-t from-gray-950 via-gray-950/95 to-transparent">
-        {/* Voice Controls - conditional based on mode */}
-        {voiceMode === 'elevenlabs' ? (
-          <VoiceControls />
-        ) : (
-          <VoiceControlsRealtime />
-        )}
+        {/* Voice Controls - Realtime API only */}
+        <VoiceControlsRealtime />
       </div>
       </main>
     </AudioPermissionGate>

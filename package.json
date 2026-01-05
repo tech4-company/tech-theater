@@ -3,23 +3,17 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "node server.js",
-    "dev:next": "next dev",
+    "dev": "next dev",
     "build": "next build",
-    "start": "NODE_ENV=production node server.js",
-    "start:next": "next start",
+    "start": "next start",
     "lint": "eslint"
   },
   "dependencies": {
-    "@elevenlabs/elevenlabs-js": "^2.27.0",
     "@radix-ui/react-icons": "^1.3.2",
-    "@types/ws": "^8.18.1",
-    "dotenv": "^17.2.3",
     "next": "16.0.10",
     "openai": "^6.10.0",
     "react": "19.2.1",
     "react-dom": "19.2.1",
-    "ws": "^8.18.3",
     "zustand": "^5.0.9"
   },
   "devDependencies": {

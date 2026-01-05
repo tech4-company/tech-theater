@@ -1,17 +1,21 @@
 'use client';
 
 // ============================================================================
-// REALTIME VOICE HOOK (OpenAI Realtime API)
+// REALTIME VOICE HOOK (OpenAI Realtime API) - WebRTC (Netlify-friendly)
 // ============================================================================
-// Hook do komunikacji głosowej w czasie rzeczywistym z OpenAI
-// Zastępuje flow: Whisper → GPT → ElevenLabs
+// - Mic jest WYŁĄCZONY gdy model mówi (nigdy nie przerywa)
+// - Persistent connection z keepalive + auto-reconnect
+// - Prosty flow: start → mic ON/OFF toggle
+// - Speaking state śledzi RZECZYWISTE odtwarzanie audio (nie tylko eventy)
 
-import { useState, useRef, useCallback, useEffect } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { Character } from '../types';
+
+type RealtimeState = 'idle' | 'connecting' | 'listening' | 'thinking' | 'speaking';
 
 interface UseRealtimeVoiceOptions {
   character: Character;
-  onStateChange?: (state: 'idle' | 'connecting' | 'listening' | 'thinking' | 'speaking') => void;
+  onStateChange?: (state: RealtimeState) => void;
   onTranscript?: (text: string, isFinal: boolean) => void;
   onResponse?: (text: string) => void;
   onError?: (error: Error) => void;
@@ -20,18 +24,42 @@ interface UseRealtimeVoiceOptions {
 interface UseRealtimeVoiceReturn {
   connect: () => Promise<void>;
   disconnect: () => void;
-  startListening: () => void;
-  stopListening: () => void;
-  startConversation: () => Promise<void>;  // Start continuous conversation
-  endConversation: () => void;              // End continuous conversation
-  interrupt: () => void;
+  startSession: () => Promise<void>;
+  endSession: () => void;
+  setMicrophoneEnabled: (enabled: boolean) => void;
   isConnected: boolean;
-  isListening: boolean;
+  isSessionActive: boolean;
+  isMicrophoneOn: boolean;
   isSpeaking: boolean;
-  isConversationActive: boolean;  // True when in continuous conversation mode
-  state: 'idle' | 'connecting' | 'listening' | 'thinking' | 'speaking';
+  state: RealtimeState;
   error: Error | null;
 }
+
+type RealtimeTokenResponse =
+  | {
+      mode: 'ephemeral';
+      client_secret: string;
+      expires_at?: number;
+      model: string;
+      voice: string;
+      sessionConfig: Record<string, unknown>;
+    }
+  | {
+      mode: 'api_key';
+      apiKey: string;
+      model: string;
+      voice: string;
+      sessionConfig: Record<string, unknown>;
+    };
+
+// Keepalive interval (30s) - prevents server-side timeout
+const KEEPALIVE_INTERVAL = 30_000;
+// Reconnect delay
+const RECONNECT_DELAY = 2_000;
+// Silence detection settings
+const SILENCE_THRESHOLD = 0.01; // Volume level considered "silence"
+const SILENCE_DURATION_MS = 400; // How long silence must last to end speaking
+const AUDIO_CHECK_INTERVAL_MS = 50; // How often to check audio level
 
 export function useRealtimeVoice({
   character,
@@ -41,631 +69,524 @@ export function useRealtimeVoice({
   onError,
 }: UseRealtimeVoiceOptions): UseRealtimeVoiceReturn {
   const [isConnected, setIsConnected] = useState(false);
-  const [isListening, setIsListening] = useState(false);
+  const [isSessionActive, setIsSessionActive] = useState(false);
+  const [isMicrophoneOn, setIsMicrophoneOn] = useState(false);
   const [isSpeaking, setIsSpeaking] = useState(false);
-  const [isConversationActive, setIsConversationActive] = useState(false);
-  const [state, setState] = useState<'idle' | 'connecting' | 'listening' | 'thinking' | 'speaking'>('idle');
+  const [state, setState] = useState<RealtimeState>('idle');
   const [error, setError] = useState<Error | null>(null);
 
-  // Ref to track conversation mode (for use in callbacks)
-  const isConversationActiveRef = useRef(false);
+  const pcRef = useRef<RTCPeerConnection | null>(null);
+  const dcRef = useRef<RTCDataChannel | null>(null);
+  const micStreamRef = useRef<MediaStream | null>(null);
+  const remoteAudioRef = useRef<HTMLAudioElement | null>(null);
+  const sessionConfigRef = useRef<Record<string, unknown> | null>(null);
 
-  const wsRef = useRef<WebSocket | null>(null);
-  const recordingAudioContextRef = useRef<AudioContext | null>(null);  // For microphone
-  const playbackAudioContextRef = useRef<AudioContext | null>(null);   // For speakers
-  const mediaStreamRef = useRef<MediaStream | null>(null);
-  const audioWorkletNodeRef = useRef<AudioWorkletNode | null>(null);
-  const audioQueueRef = useRef<Int16Array[]>([]);
-  const isPlayingRef = useRef(false);
+  // Audio analysis for detecting when model stops speaking
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const analyserRef = useRef<AnalyserNode | null>(null);
+  const silenceCheckIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const silenceStartRef = useRef<number | null>(null);
+  const responseAudioDoneRef = useRef(false); // True when OpenAI finished sending audio
 
-  // Update state and notify
-  const updateState = useCallback((newState: typeof state) => {
-    setState(newState);
-    onStateChange?.(newState);
-  }, [onStateChange]);
+  // Refs for state that callbacks need without re-renders
+  const isSessionActiveRef = useRef(false);
+  const userWantsMicOnRef = useRef(false); // User intent: mic ON after model stops
+  const isSpeakingRef = useRef(false);
+  const keepaliveIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const characterRef = useRef(character);
+  characterRef.current = character;
 
-  // Debug counter for chunks
-  const chunkCounterRef = useRef(0);
-  const totalChunksReceivedRef = useRef(0);
+  const updateState = useCallback(
+    (newState: RealtimeState) => {
+      setState(newState);
+      onStateChange?.(newState);
+    },
+    [onStateChange],
+  );
 
-  // Play audio chunk (PCM16)
-  const playAudioChunk = useCallback(async (pcm16Data: Int16Array) => {
-    const chunkId = ++chunkCounterRef.current;
-    const durationMs = (pcm16Data.length / 24000) * 1000;
-    
-    console.log(`🎵 [Chunk ${chunkId}] Playing ${pcm16Data.length} samples (${durationMs.toFixed(0)}ms), queue: ${audioQueueRef.current.length}`);
-    
-    // Use separate AudioContext for playback
-    if (!playbackAudioContextRef.current || playbackAudioContextRef.current.state === 'closed') {
-      console.log(`🎵 [Chunk ${chunkId}] Creating new AudioContext`);
-      playbackAudioContextRef.current = new AudioContext({ sampleRate: 24000 });
-    }
+  const sendEvent = useCallback((event: Record<string, unknown>) => {
+    const dc = dcRef.current;
+    if (!dc || dc.readyState !== 'open') return;
+    dc.send(JSON.stringify(event));
+  }, []);
 
-    const audioContext = playbackAudioContextRef.current;
-    
-    // Check AudioContext state
-    if (audioContext.state === 'suspended') {
-      console.log(`🎵 [Chunk ${chunkId}] Resuming suspended AudioContext`);
-      await audioContext.resume();
-    }
-
-    // Convert PCM16 to Float32 for Web Audio API
-    const float32Data = new Float32Array(pcm16Data.length);
-    for (let i = 0; i < pcm16Data.length; i++) {
-      float32Data[i] = pcm16Data[i] / 32768.0;
-    }
-
-    // Create audio buffer
-    const audioBuffer = audioContext.createBuffer(1, float32Data.length, 24000);
-    audioBuffer.getChannelData(0).set(float32Data);
-
-    // Create source and play
-    const source = audioContext.createBufferSource();
-    source.buffer = audioBuffer;
-    source.connect(audioContext.destination);
-    
-    const startTime = Date.now();
-    
-    return new Promise<void>((resolve) => {
-      source.onended = () => {
-        const actualDuration = Date.now() - startTime;
-        console.log(`🎵 [Chunk ${chunkId}] Finished in ${actualDuration}ms (expected ${durationMs.toFixed(0)}ms), queue: ${audioQueueRef.current.length}`);
-        resolve();
-      };
-      source.start();
+  // Raw mic enable/disable (hardware level)
+  const setMicHardware = useCallback((enabled: boolean) => {
+    const stream = micStreamRef.current;
+    if (!stream) return;
+    stream.getAudioTracks().forEach((t) => {
+      t.enabled = enabled;
     });
   }, []);
 
-  // Track if response is complete
-  const responseCompleteRef = useRef(false);
-  const finalizationTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  // Reference to startListening for use in finalizePlayback
-  const startListeningRef = useRef<() => Promise<void>>();
-
-  // Finalize audio playback (called when response is complete and queue is empty)
-  const finalizePlayback = useCallback(() => {
-    // Clear any pending finalization
-    if (finalizationTimeoutRef.current) {
-      clearTimeout(finalizationTimeoutRef.current);
-      finalizationTimeoutRef.current = null;
+  // Stop silence detection
+  const stopSilenceDetection = useCallback(() => {
+    if (silenceCheckIntervalRef.current) {
+      clearInterval(silenceCheckIntervalRef.current);
+      silenceCheckIntervalRef.current = null;
     }
-    
-    // Check if there's still audio to play
-    if (audioQueueRef.current.length > 0 || isPlayingRef.current) {
-      console.log('🔊 Still playing, delaying finalization...');
-      // Retry in 200ms
-      finalizationTimeoutRef.current = setTimeout(() => {
-        finalizePlayback();
-      }, 200);
-      return;
-    }
-    
-    console.log('🔊 All audio finished, setting idle');
+    silenceStartRef.current = null;
+    responseAudioDoneRef.current = false;
+  }, []);
+
+  // Called when we're sure the model has finished speaking
+  const finishSpeaking = useCallback(() => {
+    stopSilenceDetection();
+    isSpeakingRef.current = false;
     setIsSpeaking(false);
-    responseCompleteRef.current = false;
 
-    // If in conversation mode, auto-restart listening after a short delay
-    if (isConversationActiveRef.current) {
-      console.log('🔄 Conversation mode active - auto-starting listening in 300ms');
-      setTimeout(() => {
-        if (isConversationActiveRef.current && startListeningRef.current) {
-          console.log('🎤 Auto-starting listening...');
-          startListeningRef.current().catch((err) => {
-            console.error('Failed to auto-start listening:', err);
-          });
-        }
-      }, 300);
+    // Restore mic if user wants it
+    if (isSessionActiveRef.current && userWantsMicOnRef.current) {
+      setMicHardware(true);
+      setIsMicrophoneOn(true);
+      updateState('listening');
     } else {
       updateState('idle');
     }
-  }, [updateState]);
+  }, [setMicHardware, stopSilenceDetection, updateState]);
 
-  // Process audio queue - continuously until empty
-  const processAudioQueue = useCallback(async () => {
-    if (isPlayingRef.current) {
-      console.log(`⏳ processAudioQueue: Already playing, skipping (queue: ${audioQueueRef.current.length})`);
+  // Start silence detection (called when response.audio.done arrives)
+  const startSilenceDetection = useCallback(() => {
+    responseAudioDoneRef.current = true;
+
+    // If we don't have analyser set up, fall back to timeout
+    if (!analyserRef.current) {
+      console.log('No analyser, using fallback timeout');
+      setTimeout(() => {
+        if (isSpeakingRef.current && responseAudioDoneRef.current) {
+          finishSpeaking();
+        }
+      }, 800);
       return;
     }
-    
-    if (audioQueueRef.current.length === 0) {
-      console.log(`⏳ processAudioQueue: Queue empty, skipping`);
-      return;
-    }
 
-    console.log(`▶️ processAudioQueue: Starting playback loop (queue: ${audioQueueRef.current.length})`);
-    isPlayingRef.current = true;
-    updateState('speaking');
-    setIsSpeaking(true);
+    // Already running?
+    if (silenceCheckIntervalRef.current) return;
 
-    // Keep processing until queue is truly empty
-    // This loop will pick up new chunks that arrive during playback
-    let consecutiveEmptyChecks = 0;
-    const maxEmptyChecks = 5; // Wait for 5 empty checks before stopping (500ms)
-    let totalChunksPlayed = 0;
-    
-    while (consecutiveEmptyChecks < maxEmptyChecks) {
-      if (audioQueueRef.current.length > 0) {
-        consecutiveEmptyChecks = 0; // Reset counter
-        const chunk = audioQueueRef.current.shift();
-        if (chunk) {
-          totalChunksPlayed++;
-          await playAudioChunk(chunk);
+    const analyser = analyserRef.current;
+    const dataArray = new Uint8Array(analyser.frequencyBinCount);
+
+    silenceCheckIntervalRef.current = setInterval(() => {
+      if (!isSpeakingRef.current || !responseAudioDoneRef.current) {
+        stopSilenceDetection();
+        return;
+      }
+
+      analyser.getByteFrequencyData(dataArray);
+
+      // Calculate average volume (0-255 scale)
+      let sum = 0;
+      for (let i = 0; i < dataArray.length; i++) {
+        sum += dataArray[i];
+      }
+      const avgVolume = sum / dataArray.length / 255; // Normalize to 0-1
+
+      if (avgVolume < SILENCE_THRESHOLD) {
+        // Silence detected
+        if (silenceStartRef.current === null) {
+          silenceStartRef.current = Date.now();
+        } else if (Date.now() - silenceStartRef.current >= SILENCE_DURATION_MS) {
+          // Silence lasted long enough - model finished speaking
+          console.log('Silence detected, finishing speaking');
+          finishSpeaking();
         }
       } else {
-        // Queue is empty, but wait a bit for more chunks
-        consecutiveEmptyChecks++;
-        console.log(`⏳ Queue empty check ${consecutiveEmptyChecks}/${maxEmptyChecks}, responseComplete: ${responseCompleteRef.current}`);
-        if (consecutiveEmptyChecks < maxEmptyChecks) {
-          await new Promise(resolve => setTimeout(resolve, 100)); // Wait 100ms
-        }
+        // Audio playing - reset silence timer
+        silenceStartRef.current = null;
       }
-    }
+    }, AUDIO_CHECK_INTERVAL_MS);
+  }, [finishSpeaking, stopSilenceDetection]);
 
-    console.log(`⏹️ Queue consistently empty after ${totalChunksPlayed} chunks, stopping playback`);
-    console.log(`⏹️ Total received: ${totalChunksReceivedRef.current}, played: ${chunkCounterRef.current}`);
-    isPlayingRef.current = false;
-    
-    // Check if response is complete
-    if (responseCompleteRef.current) {
-      console.log('✅ Response complete - finalizing...');
-      finalizePlayback();
-    } else {
-      console.log('⏳ Waiting for more audio or response.done...');
-      // Don't set idle yet - more chunks might come
+  // Clear keepalive
+  const clearKeepalive = useCallback(() => {
+    if (keepaliveIntervalRef.current) {
+      clearInterval(keepaliveIntervalRef.current);
+      keepaliveIntervalRef.current = null;
     }
-  }, [playAudioChunk, updateState, finalizePlayback]);
+  }, []);
 
-  // Connect to OpenAI Realtime API via relay server
+  // Start keepalive pings
+  const startKeepalive = useCallback(() => {
+    clearKeepalive();
+    keepaliveIntervalRef.current = setInterval(() => {
+      sendEvent({ type: 'input_audio_buffer.clear' });
+    }, KEEPALIVE_INTERVAL);
+  }, [clearKeepalive, sendEvent]);
+
+  // Disconnect (cleanup)
+  const disconnect = useCallback(() => {
+    try {
+      clearKeepalive();
+      stopSilenceDetection();
+
+      if (reconnectTimeoutRef.current) {
+        clearTimeout(reconnectTimeoutRef.current);
+        reconnectTimeoutRef.current = null;
+      }
+
+      setMicHardware(false);
+
+      if (dcRef.current) {
+        try {
+          dcRef.current.close();
+        } catch {}
+        dcRef.current = null;
+      }
+
+      if (pcRef.current) {
+        try {
+          pcRef.current.close();
+        } catch {}
+        pcRef.current = null;
+      }
+
+      if (micStreamRef.current) {
+        micStreamRef.current.getTracks().forEach((t) => t.stop());
+        micStreamRef.current = null;
+      }
+
+      if (audioContextRef.current) {
+        try {
+          audioContextRef.current.close();
+        } catch {}
+        audioContextRef.current = null;
+        analyserRef.current = null;
+      }
+
+      if (remoteAudioRef.current) {
+        remoteAudioRef.current.srcObject = null;
+        remoteAudioRef.current = null;
+      }
+
+      sessionConfigRef.current = null;
+      isSessionActiveRef.current = false;
+      userWantsMicOnRef.current = false;
+      isSpeakingRef.current = false;
+    } finally {
+      setIsConnected(false);
+      setIsSessionActive(false);
+      setIsMicrophoneOn(false);
+      setIsSpeaking(false);
+      updateState('idle');
+    }
+  }, [clearKeepalive, setMicHardware, stopSilenceDetection, updateState]);
+
+  // Handle Realtime events from data channel
+  const handleRealtimeEvent = useCallback(
+    (message: any) => {
+      const type = message?.type as string | undefined;
+      if (!type) return;
+
+      switch (type) {
+        case 'session.created':
+        case 'session.updated':
+          setIsConnected(true);
+          if (!isSessionActiveRef.current) {
+            updateState('idle');
+          }
+          break;
+
+        case 'input_audio_buffer.speech_started':
+          // User started speaking
+          updateState('listening');
+          break;
+
+        case 'input_audio_buffer.speech_stopped':
+          // User stopped speaking → model will think
+          updateState('thinking');
+          break;
+
+        case 'conversation.item.input_audio_transcription.completed':
+          if (message.transcript) {
+            onTranscript?.(message.transcript, true);
+          }
+          break;
+
+        case 'response.text.delta':
+          if (message.delta) {
+            onTranscript?.(message.delta, false);
+          }
+          break;
+
+        case 'response.text.done':
+          if (message.text) {
+            onResponse?.(message.text);
+          }
+          break;
+
+        case 'response.created':
+          // Model starts speaking → MIC OFF (never interrupt!)
+          isSpeakingRef.current = true;
+          responseAudioDoneRef.current = false;
+          setIsSpeaking(true);
+          setMicHardware(false);
+          setIsMicrophoneOn(false);
+          updateState('speaking');
+          break;
+
+        case 'response.audio.done':
+          // OpenAI finished SENDING audio - but playback continues
+          // Start silence detection to know when playback actually ends
+          console.log('response.audio.done - starting silence detection');
+          startSilenceDetection();
+          break;
+
+        case 'response.done':
+          // Response complete (including text) - ensure silence detection is running
+          if (isSpeakingRef.current && !responseAudioDoneRef.current) {
+            // In case response.audio.done didn't fire
+            console.log('response.done - starting silence detection (fallback)');
+            startSilenceDetection();
+          }
+          break;
+
+        case 'error': {
+          const msg = message?.error?.message || 'Realtime API error';
+          console.error('Realtime error:', msg);
+          break;
+        }
+
+        default:
+          break;
+      }
+    },
+    [onResponse, onTranscript, setMicHardware, startSilenceDetection, updateState],
+  );
+
+  // Connect to Realtime API via WebRTC
   const connect = useCallback(async () => {
     try {
       updateState('connecting');
       setError(null);
 
-      // Get session configuration from backend
-      const response = await fetch('/api/realtime-voice', {
+      // 1) Get ephemeral token + sessionConfig from backend
+      const tokenRes = await fetch('/api/realtime-voice', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          characterId: character.id,
-        }),
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ characterId: characterRef.current.id }),
       });
 
-      if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.error || 'Failed to get session config');
+      if (!tokenRes.ok) {
+        const errJson = await tokenRes.json().catch(() => ({}));
+        throw new Error(errJson.error || 'Failed to get Realtime token');
       }
 
-      const config = await response.json();
-      console.log('Realtime API config:', config);
+      const tokenData = (await tokenRes.json()) as RealtimeTokenResponse;
+      const bearer =
+        tokenData.mode === 'ephemeral' ? tokenData.client_secret : tokenData.apiKey;
 
-      // Encode session config for URL (UTF-8 safe base64)
-      // btoa() doesn't support Unicode, so we use TextEncoder
-      const sessionConfigJson = JSON.stringify(config.sessionConfig);
-      const encoder = new TextEncoder();
-      const bytes = encoder.encode(sessionConfigJson);
-      const sessionConfigBase64 = btoa(String.fromCharCode(...bytes));
-      
-      // Connect to relay server (which proxies to OpenAI)
-      // This bypasses browser WebSocket header limitations
-      // WebSocket relay runs on separate port (3001) to avoid HMR conflicts
-      const wsPort = 3001;
-      const wsUrl = `ws://${window.location.hostname}:${wsPort}?characterId=${character.id}&sessionConfig=${encodeURIComponent(sessionConfigBase64)}`;
-      
-      console.log('🔌 Connecting to relay server:', wsUrl.substring(0, 100) + '...');
-      
-      const ws = new WebSocket(wsUrl);
-      wsRef.current = ws;
-      
-      const connectionId = Date.now().toString(36);
-      console.log(`[${connectionId}] WebSocket created, readyState:`, ws.readyState);
+      sessionConfigRef.current = tokenData.sessionConfig ?? null;
 
-      // WebSocket event handlers
-      ws.onopen = () => {
-        console.log(`[${connectionId}] ✅ WebSocket connected to relay server`);
-        console.log(`[${connectionId}] wsRef.current === ws:`, wsRef.current === ws);
-      };
+      // 2) WebRTC: peer connection + data channel + audio track
+      const pc = new RTCPeerConnection({
+        iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
+      });
+      pcRef.current = pc;
 
-      ws.onmessage = (event) => {
-        try {
-          const message = JSON.parse(event.data);
-          console.log(`[${connectionId}] 📨 Received:`, message.type);
-          console.log(`[${connectionId}] wsRef.current === ws:`, wsRef.current === ws);
+      // Handle ICE connection state changes (for auto-reconnect)
+      pc.oniceconnectionstatechange = () => {
+        const iceState = pc.iceConnectionState;
+        console.log('ICE connection state:', iceState);
 
-          // Only process if this is still the active connection
-          if (wsRef.current !== ws) {
-            console.log(`[${connectionId}] ⚠️ Ignoring message from stale connection`);
-            return;
-          }
-
-          switch (message.type) {
-            case 'relay.connected':
-              console.log(`[${connectionId}] 🔗 Relay server connected to OpenAI`);
-              break;
-
-            case 'session.created':
-            case 'session.updated':
-              console.log(`[${connectionId}] ✅ Session ready - setting isConnected=true`);
-              setIsConnected(true);
-              updateState('idle');
-              break;
-
-            case 'input_audio_buffer.speech_started':
-              console.log('Speech detected');
-              updateState('listening');
-              break;
-
-            case 'input_audio_buffer.speech_stopped':
-              console.log('Speech stopped');
-              updateState('thinking');
-              break;
-
-            case 'conversation.item.input_audio_transcription.completed':
-              console.log(`🎤 Transcription completed: "${message.transcript}" (while isSpeaking: ${isSpeaking}, isPlaying: ${isPlayingRef.current})`);
-              if (message.transcript) {
-                onTranscript?.(message.transcript, true);
-              }
-              break;
-
-            case 'response.created':
-              console.log(`🚀 NEW RESPONSE CREATED - isSpeaking: ${isSpeaking}, isPlaying: ${isPlayingRef.current}, queue: ${audioQueueRef.current.length}`);
-              break;
-
-            case 'response.cancelled':
-              console.log(`🛑 RESPONSE CANCELLED - something interrupted it!`);
-              break;
-
-            case 'response.audio.delta':
-              // Received audio chunk from OpenAI
-              if (message.delta) {
-                totalChunksReceivedRef.current++;
-                const chunkNum = totalChunksReceivedRef.current;
-                
-                // Decode base64 PCM16 audio
-                const audioData = atob(message.delta);
-                const pcm16 = new Int16Array(audioData.length / 2);
-                for (let i = 0; i < pcm16.length; i++) {
-                  pcm16[i] = (audioData.charCodeAt(i * 2 + 1) << 8) | audioData.charCodeAt(i * 2);
-                }
-                
-                const durationMs = (pcm16.length / 24000) * 1000;
-                console.log(`📥 [Received ${chunkNum}] ${pcm16.length} samples (${durationMs.toFixed(0)}ms), queue before: ${audioQueueRef.current.length}, isPlaying: ${isPlayingRef.current}`);
-                
-                audioQueueRef.current.push(pcm16);
-                processAudioQueue();
-              }
-              break;
-
-            case 'response.audio.done':
-              console.log(`🔊 Audio stream complete from OpenAI - received ${totalChunksReceivedRef.current} chunks total`);
-              console.log(`🔊 Queue size: ${audioQueueRef.current.length}, isPlaying: ${isPlayingRef.current}`);
-              // Mark response as complete - finalization will happen after queue is empty
-              responseCompleteRef.current = true;
-              break;
-
-            case 'response.done':
-              console.log(`📝 Response complete - queue: ${audioQueueRef.current.length}, isPlaying: ${isPlayingRef.current}`);
-              // Response is fully done
-              responseCompleteRef.current = true;
-              // DON'T trigger finalization here - let processAudioQueue handle it
-              // The loop will exit when queue is empty for 500ms
-              break;
-
-            case 'response.text.delta':
-              if (message.delta) {
-                onTranscript?.(message.delta, false);
-              }
-              break;
-
-            case 'response.text.done':
-              if (message.text) {
-                onResponse?.(message.text);
-              }
-              break;
-
-            case 'error':
-              console.error('❌ Realtime API error:', message.error);
-              console.error('❌ Error details:', JSON.stringify(message.error, null, 2));
-              // Don't set error state for non-critical errors
-              if (message.error?.type !== 'invalid_request_error') {
-                const err = new Error(message.error?.message || 'Realtime API error');
-                setError(err);
-                onError?.(err);
-              }
-              break;
-
-            default:
-              // Ignore other events
-              break;
-          }
-        } catch (err) {
-          console.error('Error processing WebSocket message:', err);
-        }
-      };
-
-      ws.onerror = (event) => {
-        console.error(`[${connectionId}] ❌ WebSocket error:`, event);
-        console.log(`[${connectionId}] wsRef.current === ws:`, wsRef.current === ws);
-        // Only update state if this is the current active connection
-        if (wsRef.current === ws) {
-          const err = new Error('WebSocket connection error');
-          setError(err);
-          onError?.(err);
-        }
-      };
-
-      ws.onclose = (event) => {
-        console.log(`[${connectionId}] 🔌 WebSocket disconnected, code:`, event.code, 'reason:', event.reason);
-        console.log(`[${connectionId}] wsRef.current === ws:`, wsRef.current === ws);
-        // Only update state if this is the current active connection
-        // (React StrictMode can cause multiple connections)
-        if (wsRef.current === ws) {
-          console.log(`[${connectionId}] Resetting connection state`);
+        if (iceState === 'disconnected' || iceState === 'failed') {
+          console.warn('WebRTC disconnected, will reconnect...');
           setIsConnected(false);
-          setIsListening(false);
-          setIsSpeaking(false);
-          updateState('idle');
-          wsRef.current = null;
-        } else {
-          console.log(`[${connectionId}] Ignoring close from stale connection`);
+
+          if (!reconnectTimeoutRef.current) {
+            reconnectTimeoutRef.current = setTimeout(async () => {
+              reconnectTimeoutRef.current = null;
+              if (isSessionActiveRef.current) {
+                console.log('Attempting reconnect...');
+                disconnect();
+                try {
+                  await connect();
+                  if (isSessionActiveRef.current) {
+                    setIsSessionActive(true);
+                    if (userWantsMicOnRef.current) {
+                      setMicHardware(true);
+                      setIsMicrophoneOn(true);
+                      updateState('listening');
+                    }
+                  }
+                } catch (e) {
+                  console.error('Reconnect failed:', e);
+                }
+              }
+            }, RECONNECT_DELAY);
+          }
         }
       };
 
-    } catch (err) {
-      const error = err as Error;
-      console.error('Failed to connect to Realtime API:', err);
-      setError(error);
-      onError?.(error);
-      updateState('idle');
-    }
-  }, [character, updateState, onTranscript, onResponse, onError, processAudioQueue]);
+      // Remote audio → <audio> element + AudioContext for analysis
+      const audioEl = new Audio();
+      audioEl.autoplay = true;
+      remoteAudioRef.current = audioEl;
 
-  // Disconnect from Realtime API
-  const disconnect = useCallback(() => {
-    console.log('🔌 Disconnecting from Realtime API');
-    
-    // Clear finalization timeout
-    if (finalizationTimeoutRef.current) {
-      clearTimeout(finalizationTimeoutRef.current);
-      finalizationTimeoutRef.current = null;
-    }
-    
-    if (wsRef.current) {
-      wsRef.current.close();
-      wsRef.current = null;
-    }
+      pc.ontrack = (e) => {
+        const [stream] = e.streams;
+        if (stream && remoteAudioRef.current) {
+          remoteAudioRef.current.srcObject = stream;
+          void remoteAudioRef.current.play().catch(() => {});
 
-    if (mediaStreamRef.current) {
-      mediaStreamRef.current.getTracks().forEach(track => track.stop());
-      mediaStreamRef.current = null;
-    }
+          // Set up AudioContext for silence detection
+          try {
+            const audioCtx = new AudioContext();
+            audioContextRef.current = audioCtx;
 
-    if (recordingAudioContextRef.current) {
-      recordingAudioContextRef.current.close();
-      recordingAudioContextRef.current = null;
-    }
+            const source = audioCtx.createMediaStreamSource(stream);
+            const analyser = audioCtx.createAnalyser();
+            analyser.fftSize = 256;
+            source.connect(analyser);
+            // Don't connect to destination - we already have <audio> element playing
+            analyserRef.current = analyser;
 
-    if (playbackAudioContextRef.current) {
-      playbackAudioContextRef.current.close();
-      playbackAudioContextRef.current = null;
-    }
+            console.log('Audio analyser set up for silence detection');
+          } catch (err) {
+            console.warn('Failed to set up audio analyser:', err);
+          }
+        }
+      };
 
-    audioQueueRef.current = [];
-    isPlayingRef.current = false;
-    responseCompleteRef.current = false;
-    setIsConnected(false);
-    setIsListening(false);
-    setIsSpeaking(false);
-    updateState('idle');
-  }, [updateState]);
+      // Data channel for events
+      const dc = pc.createDataChannel('oai-events');
+      dcRef.current = dc;
 
-  // Start listening (capture microphone and stream to OpenAI)
-  const startListening = useCallback(async () => {
-    if (!isConnected || !wsRef.current) {
-      throw new Error('Not connected to Realtime API');
-    }
+      dc.onmessage = (event) => {
+        try {
+          const msg = JSON.parse(event.data);
+          handleRealtimeEvent(msg);
+        } catch {}
+      };
 
-    // Don't start listening if we're already listening or speaking
-    if (isListening || isSpeaking || isPlayingRef.current) {
-      console.log('⏭️ Skipping startListening - already listening or speaking');
-      return;
-    }
+      dc.onopen = () => {
+        if (sessionConfigRef.current) {
+          sendEvent({
+            type: 'session.update',
+            session: sessionConfigRef.current,
+          });
+        }
+        startKeepalive();
+      };
 
-    try {
-      console.log('🎤 Starting listening...');
-      
-      // Get microphone access
-      const stream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true,
-          sampleRate: 24000,
-        },
+      dc.onclose = () => {
+        clearKeepalive();
+      };
+
+      // Mic: add track but keep disabled until user explicitly enables
+      const mic = await navigator.mediaDevices.getUserMedia({ audio: true });
+      micStreamRef.current = mic;
+      mic.getAudioTracks().forEach((t) => {
+        t.enabled = false;
+        pc.addTrack(t, mic);
       });
 
-      mediaStreamRef.current = stream;
+      // 3) SDP offer/answer with OpenAI Realtime (WebRTC)
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
 
-      // Setup audio context for capturing (separate from playback)
-      if (!recordingAudioContextRef.current || recordingAudioContextRef.current.state === 'closed') {
-        recordingAudioContextRef.current = new AudioContext({ sampleRate: 24000 });
+      const answerRes = await fetch(
+        `https://api.openai.com/v1/realtime?model=${encodeURIComponent(tokenData.model)}`,
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${bearer}`,
+            'Content-Type': 'application/sdp',
+            'OpenAI-Beta': 'realtime=v1',
+          },
+          body: offer.sdp!,
+        },
+      );
+
+      if (!answerRes.ok) {
+        const text = await answerRes.text().catch(() => '');
+        throw new Error(
+          `Realtime SDP exchange failed (${answerRes.status}): ${text || answerRes.statusText}`,
+        );
       }
 
-      const audioContext = recordingAudioContextRef.current;
-      const source = audioContext.createMediaStreamSource(stream);
+      const answerSdp = await answerRes.text();
+      await pc.setRemoteDescription({ type: 'answer', sdp: answerSdp });
 
-      // Create AudioWorklet for PCM16 conversion and streaming
-      // For now, use ScriptProcessor (deprecated but widely supported)
-      const processor = audioContext.createScriptProcessor(4096, 1, 1);
-      
-      processor.onaudioprocess = (event) => {
-        if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
-          return;
-        }
-
-        // Block audio when model is speaking (prevents echo feedback)
-        if (isPlayingRef.current) {
-          return;
-        }
-
-        const inputData = event.inputBuffer.getChannelData(0);
-        
-        // Convert Float32 to PCM16
-        const pcm16 = new Int16Array(inputData.length);
-        for (let i = 0; i < inputData.length; i++) {
-          const s = Math.max(-1, Math.min(1, inputData[i]));
-          pcm16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
-        }
-
-        // Convert to base64 and send to OpenAI
-        const base64 = btoa(String.fromCharCode.apply(null, Array.from(new Uint8Array(pcm16.buffer))));
-        
-        wsRef.current.send(JSON.stringify({
-          type: 'input_audio_buffer.append',
-          audio: base64,
-        }));
-      };
-
-      source.connect(processor);
-      processor.connect(audioContext.destination);
-      audioWorkletNodeRef.current = processor as any;
-
-      setIsListening(true);
-      updateState('listening');
-
-      console.log('✅ Listening started');
-
-    } catch (err) {
-      const error = err as Error;
-      console.error('Failed to start listening:', err);
-      setError(error);
-      onError?.(error);
-    }
-  }, [isConnected, isListening, isSpeaking, updateState, onError]);
-
-  // Store startListening in ref for finalizePlayback
-  startListeningRef.current = startListening;
-
-  // Start continuous conversation mode
-  const startConversation = useCallback(async () => {
-    console.log('🎭 Starting continuous conversation mode');
-    isConversationActiveRef.current = true;
-    setIsConversationActive(true);
-    await startListening();
-  }, [startListening]);
-
-  // End continuous conversation mode
-  const endConversation = useCallback(() => {
-    console.log('🎭 Ending continuous conversation mode');
-    isConversationActiveRef.current = false;
-    setIsConversationActive(false);
-    
-    // Stop any current listening
-    if (audioWorkletNodeRef.current) {
-      audioWorkletNodeRef.current.disconnect();
-      audioWorkletNodeRef.current = null;
-    }
-
-    if (mediaStreamRef.current) {
-      mediaStreamRef.current.getTracks().forEach(track => track.stop());
-      mediaStreamRef.current = null;
-    }
-
-    setIsListening(false);
-    
-    // If speaking, let it finish, otherwise go to idle
-    if (!isSpeaking && !isPlayingRef.current) {
+      setIsConnected(true);
       updateState('idle');
+    } catch (err) {
+      const e = err as Error;
+      setError(e);
+      onError?.(e);
+      updateState('idle');
+      disconnect();
     }
-  }, [isSpeaking, updateState]);
+  }, [
+    clearKeepalive,
+    disconnect,
+    handleRealtimeEvent,
+    onError,
+    sendEvent,
+    setMicHardware,
+    startKeepalive,
+    updateState,
+  ]);
 
-  // Stop listening
-  const stopListening = useCallback(() => {
-    if (audioWorkletNodeRef.current) {
-      audioWorkletNodeRef.current.disconnect();
-      audioWorkletNodeRef.current = null;
-    }
-
-    if (mediaStreamRef.current) {
-      mediaStreamRef.current.getTracks().forEach(track => track.stop());
-      mediaStreamRef.current = null;
-    }
-
-    // Commit audio buffer to trigger response
-    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify({
-        type: 'input_audio_buffer.commit',
-      }));
-
-      wsRef.current.send(JSON.stringify({
-        type: 'response.create',
-      }));
-    }
-
-    setIsListening(false);
-    updateState('thinking');
-
-    console.log('Listening stopped');
-  }, [updateState]);
-
-  // Interrupt current response
-  const interrupt = useCallback(() => {
-    console.log('🛑 Interrupting response');
-    
-    // Clear finalization timeout
-    if (finalizationTimeoutRef.current) {
-      clearTimeout(finalizationTimeoutRef.current);
-      finalizationTimeoutRef.current = null;
-    }
-    
-    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify({
-        type: 'response.cancel',
-      }));
-    }
-
-    audioQueueRef.current = [];
-    isPlayingRef.current = false;
-    responseCompleteRef.current = false;
-    
-    // Close playback audio context to stop current audio
-    if (playbackAudioContextRef.current) {
-      playbackAudioContextRef.current.close();
-      playbackAudioContextRef.current = null;
-    }
-
-    setIsSpeaking(false);
+  // Start session (user clicked "Start") - connection stays open indefinitely
+  const startSession = useCallback(async () => {
+    if (!isConnected) throw new Error('Not connected to Realtime API');
+    isSessionActiveRef.current = true;
+    setIsSessionActive(true);
     updateState('idle');
-  }, [updateState]);
+  }, [isConnected, updateState]);
 
-  // Store disconnect in ref to avoid dependency issues
-  const disconnectRef = useRef(disconnect);
-  disconnectRef.current = disconnect;
+  // End session (user wants to stop) - but keep connection alive
+  const endSession = useCallback(() => {
+    isSessionActiveRef.current = false;
+    userWantsMicOnRef.current = false;
+    setIsSessionActive(false);
+    setMicHardware(false);
+    setIsMicrophoneOn(false);
+    stopSilenceDetection();
+    updateState('idle');
+  }, [setMicHardware, stopSilenceDetection, updateState]);
 
-  // Cleanup on unmount (only runs once on actual unmount)
+  // Toggle microphone (user controls this)
+  const setMicrophoneEnabled = useCallback(
+    (enabled: boolean) => {
+      userWantsMicOnRef.current = enabled;
+
+      // Only actually enable mic if model is NOT speaking
+      if (enabled && !isSpeakingRef.current) {
+        setMicHardware(true);
+        setIsMicrophoneOn(true);
+        updateState('listening');
+      } else if (!enabled) {
+        setMicHardware(false);
+        setIsMicrophoneOn(false);
+        if (!isSpeakingRef.current) {
+          updateState('idle');
+        }
+      }
+    },
+    [setMicHardware, updateState],
+  );
+
+  // Cleanup on unmount
   useEffect(() => {
     return () => {
-      console.log('🧹 Hook cleanup - disconnecting');
-      disconnectRef.current();
+      disconnect();
     };
-  }, []); // Empty deps - only runs on mount/unmount
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   return {
     connect,
     disconnect,
-    startListening,
-    stopListening,
-    startConversation,
-    endConversation,
-    interrupt,
+    startSession,
+    endSession,
+    setMicrophoneEnabled,
     isConnected,
-    isListening,
+    isSessionActive,
+    isMicrophoneOn,
     isSpeaking,
-    isConversationActive,
     state,
     error,
   };
 }
-

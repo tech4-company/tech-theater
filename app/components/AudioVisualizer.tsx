@@ -15,8 +15,8 @@ interface AudioVisualizerProps {
 
 export function AudioVisualizer({ audioStream, className = '' }: AudioVisualizerProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const animationRef = useRef<number>();
-  const analyserRef = useRef<AnalyserNode>();
+  const animationRef = useRef<number | null>(null);
+  const analyserRef = useRef<AnalyserNode | null>(null);
   const state = useAppStore((s) => s.state);
 
   useEffect(() => {

@@ -58,36 +58,18 @@ export async function POST(request: NextRequest) {
     });
 
     if (!response.ok) {
-      // Fallback: return configuration for direct API key usage
-      console.warn('Ephemeral token not available, using direct API key mode');
-      return NextResponse.json({
-        mode: 'api_key',
-        model: 'gpt-4o-realtime-preview-2024-12-17',
-        voice: 'alloy',
-        sessionConfig: {
-          modalities: ['text', 'audio'],
-          instructions: character.systemPrompt,
-          voice: 'alloy',
-          input_audio_format: 'pcm16',
-          output_audio_format: 'pcm16',
-          input_audio_transcription: {
-            model: 'whisper-1',
-          },
-          // Server VAD for automatic silence detection
-          // Echo is prevented client-side by blocking audio during model speech
-          turn_detection: {
-            type: 'server_vad',
-            threshold: 0.5,           // Sensitivity (0.0-1.0)
-            prefix_padding_ms: 300,   // Audio before speech
-            silence_duration_ms: 700, // Silence before triggering response
-          },
-          temperature: character.llmConfig.temperature,
-          max_response_output_tokens: character.llmConfig.maxTokens,
+      const details = await response.text().catch(() => '');
+      console.warn('Failed to create ephemeral session:', response.status, details);
+
+      // IMPORTANT: Never expose OPENAI_API_KEY to the browser in production.
+      // If ephemeral sessions are unavailable, fail with a clear error.
+      return NextResponse.json(
+        {
+          error: 'Failed to create Realtime API ephemeral session',
+          details: details || response.statusText,
         },
-        // WARNING: In production, consider using a proxy to avoid exposing API key
-        // For development/demo purposes only:
-        apiKey: process.env.OPENAI_API_KEY,
-      });
+        { status: 502 },
+      );
     }
 
     const data = await response.json();

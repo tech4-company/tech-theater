@@ -3,7 +3,8 @@
 // ============================================================================
 // VOICE CONTROLS COMPONENT (Realtime API)
 // ============================================================================
-// Interfejs do kontrolowania komunikacji głosowej przez OpenAI Realtime API
+// Prosty flow: Start → Toggle mikrofon ON/OFF
+// Mikrofon jest ZAWSZE wyłączony gdy model mówi (nigdy nie przerywa)
 
 import { useAppStore } from '@/lib/store';
 import { useRealtimeVoice } from '@/lib/audio/useRealtimeVoice';
@@ -17,20 +18,29 @@ const MicrophoneIcon = () => (
   </svg>
 );
 
-const StopIcon = () => (
+const MicrophoneOffIcon = () => (
   <svg width="40" height="40" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-    <rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor"/>
+    <path d="M12 1C10.34 1 9 2.34 9 4V12C9 13.66 10.34 15 12 15C13.66 15 15 13.66 15 12V4C15 2.34 13.66 1 12 1Z" fill="currentColor" opacity="0.4"/>
+    <path d="M19 10V12C19 15.87 15.87 19 12 19C8.13 19 5 15.87 5 12V10H3V12C3 16.42 6.28 20.11 10.5 20.86V24H13.5V20.86C17.72 20.11 21 16.42 21 12V10H19Z" fill="currentColor" opacity="0.4"/>
+    <line x1="4" y1="4" x2="20" y2="20" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
   </svg>
 );
 
-const ConnectIcon = () => (
+const PlayIcon = () => (
   <svg width="40" height="40" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-    <path d="M8 5V19M16 5V19M12 3L12 21" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
+    <path d="M8 5V19L19 12L8 5Z" fill="currentColor"/>
+  </svg>
+);
+
+const SpeakingIcon = () => (
+  <svg width="40" height="40" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <path d="M3 9V15H7L12 20V4L7 9H3Z" fill="currentColor"/>
+    <path d="M16 9C16 9 18 10.5 18 12C18 13.5 16 15 16 15" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
+    <path d="M19 6C19 6 22 9 22 12C22 15 19 18 19 18" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
   </svg>
 );
 
 export function VoiceControlsRealtime() {
-  const state = useAppStore((s) => s.state);
   const setState = useAppStore((s) => s.setState);
   const addMessage = useAppStore((s) => s.addMessage);
   const currentCharacter = useAppStore((s) => s.currentCharacter);
@@ -38,19 +48,19 @@ export function VoiceControlsRealtime() {
   // Realtime voice hook
   const {
     connect,
-    startConversation,
-    endConversation,
-    interrupt,
+    startSession,
+    endSession,
+    setMicrophoneEnabled,
     isConnected,
-    isListening,
+    isSessionActive,
+    isMicrophoneOn,
     isSpeaking,
-    isConversationActive,
     state: realtimeState,
     error: realtimeError,
   } = useRealtimeVoice({
     character: currentCharacter!,
     onStateChange: (newState) => {
-      // Map Realtime states to app states
+      // Map Realtime states to app states (for video sync)
       if (newState === 'listening') {
         setState('listening');
       } else if (newState === 'thinking') {
@@ -63,7 +73,6 @@ export function VoiceControlsRealtime() {
     },
     onTranscript: (text, isFinal) => {
       if (isFinal) {
-        // Add user message when transcription is complete
         const userMessage = {
           id: Date.now().toString(),
           role: 'user' as const,
@@ -74,7 +83,6 @@ export function VoiceControlsRealtime() {
       }
     },
     onResponse: (text) => {
-      // Add assistant message when response is complete
       const assistantMessage = {
         id: (Date.now() + 1).toString(),
         role: 'assistant' as const,
@@ -85,8 +93,7 @@ export function VoiceControlsRealtime() {
     },
     onError: (error) => {
       console.error('Realtime API error:', error);
-      alert(`Błąd Realtime API: ${error.message}`);
-      setState('waiting');
+      // Don't show alert for minor errors, just log
     },
   });
 
@@ -100,37 +107,22 @@ export function VoiceControlsRealtime() {
 
   // Auto-connect on mount if character is available
   useEffect(() => {
-    const effectId = Date.now().toString(36);
-    console.log(`[Effect ${effectId}] useEffect running`);
-    
     isMounted.current = true;
     let timeoutId: ReturnType<typeof setTimeout> | null = null;
 
     if (currentCharacter) {
-      console.log(`[Effect ${effectId}] Scheduling connect in 300ms`);
-      
-      // Use timeout to avoid React StrictMode issues
-      // Don't set hasInitiatedConnection until inside the timeout
       timeoutId = setTimeout(() => {
-        console.log(`[Effect ${effectId}] Timeout fired, isMounted:`, isMounted.current, 'hasInitiated:', hasInitiatedConnection.current);
-        
-        // Check both conditions inside timeout
         if (isMounted.current && !hasInitiatedConnection.current) {
           hasInitiatedConnection.current = true;
-          console.log(`[Effect ${effectId}] ✅ Calling connect()`);
-          
           connectRef.current().catch((err) => {
-            console.error(`[Effect ${effectId}] Failed to auto-connect:`, err);
+            console.error('Failed to auto-connect:', err);
             hasInitiatedConnection.current = false;
           });
-        } else {
-          console.log(`[Effect ${effectId}] Skipping connect - isMounted:`, isMounted.current, 'hasInitiated:', hasInitiatedConnection.current);
         }
       }, 300);
     }
 
     return () => {
-      console.log(`[Effect ${effectId}] Cleanup called`);
       if (timeoutId) {
         clearTimeout(timeoutId);
       }
@@ -138,47 +130,45 @@ export function VoiceControlsRealtime() {
     };
   }, [currentCharacter]);
 
-  // Start conversation handler - starts continuous listening mode
-  const handleStartConversation = useCallback(async () => {
+  // Start session handler
+  const handleStart = useCallback(async () => {
     if (!isConnected) {
       alert('Nie połączono z Realtime API. Spróbuj odświeżyć stronę.');
       return;
     }
 
     try {
-      await startConversation();
+      await startSession();
+      // Auto-enable mic when starting
+      setMicrophoneEnabled(true);
     } catch (err) {
-      console.error('Failed to start conversation:', err);
+      console.error('Failed to start session:', err);
       alert(`Błąd: ${err instanceof Error ? err.message : 'Unknown error'}`);
     }
-  }, [isConnected, startConversation]);
+  }, [isConnected, startSession, setMicrophoneEnabled]);
 
-  // End conversation handler
-  const handleEndConversation = useCallback(() => {
-    endConversation();
-  }, [endConversation]);
+  // Toggle mic handler
+  const handleToggleMic = useCallback(() => {
+    setMicrophoneEnabled(!isMicrophoneOn);
+  }, [isMicrophoneOn, setMicrophoneEnabled]);
 
-  // Interrupt handler (for when model is speaking)
-  const handleInterrupt = useCallback(() => {
-    interrupt();
-  }, [interrupt]);
-
-  // Determine current display state
-  const displayState = (() => {
+  // Determine display state
+  type DisplayState = 'connecting' | 'ready' | 'mic-off' | 'mic-on' | 'speaking';
+  
+  const displayState: DisplayState = (() => {
     if (!isConnected) return 'connecting';
-    if (!isConversationActive) return 'idle';
-    if (isListening) return 'listening';
+    if (!isSessionActive) return 'ready';
     if (isSpeaking) return 'speaking';
-    if (realtimeState === 'thinking') return 'thinking';
-    return 'conversing'; // Active conversation but between turns
+    if (isMicrophoneOn) return 'mic-on';
+    return 'mic-off';
   })();
 
-  // Show error if any
-  if (realtimeError) {
+  // Show error if critical
+  if (realtimeError && !isConnected) {
     return (
       <div className="flex flex-col items-center gap-6 p-8">
         <div className="text-red-500 text-center">
-          <p className="text-xl font-semibold">Błąd Realtime API</p>
+          <p className="text-xl font-semibold">Błąd połączenia</p>
           <p className="text-sm mt-2">{realtimeError.message}</p>
         </div>
         <button
@@ -191,25 +181,21 @@ export function VoiceControlsRealtime() {
     );
   }
 
-  // Show connecting state
-  if (!isConnected) {
-    return (
-      <div className="flex flex-col items-center gap-6 p-8">
-        <div className="w-24 h-24 rounded-full bg-gray-400 flex items-center justify-center">
-          <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-white"></div>
-        </div>
-      </div>
-    );
-  }
-
   return (
-    <div className="flex flex-col items-center gap-6 p-8">
+    <div className="flex flex-col items-center gap-4 p-8">
       {/* Main Button */}
       <div className="relative">
-        {/* Start conversation button - only shown when not in conversation */}
-        {displayState === 'idle' && (
+        {/* Connecting spinner */}
+        {displayState === 'connecting' && (
+          <div className="w-24 h-24 rounded-full bg-gray-600 flex items-center justify-center">
+            <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-white"></div>
+          </div>
+        )}
+
+        {/* Start button (connected but not started) */}
+        {displayState === 'ready' && (
           <button
-            onClick={handleStartConversation}
+            onClick={handleStart}
             className="
               w-24 h-24 rounded-full 
               bg-green-500 hover:bg-green-600 
@@ -219,16 +205,35 @@ export function VoiceControlsRealtime() {
               shadow-lg hover:shadow-xl
               focus:outline-none focus:ring-4 focus:ring-green-300
             "
-            aria-label="Rozpocznij rozmowę"
+            aria-label="Rozpocznij"
           >
-            <MicrophoneIcon />
+            <PlayIcon />
           </button>
         )}
 
-        {/* Listening indicator - shows when actively listening */}
-        {displayState === 'listening' && (
+        {/* Mic OFF - click to enable */}
+        {displayState === 'mic-off' && (
           <button
-            onClick={handleEndConversation}
+            onClick={handleToggleMic}
+            className="
+              w-24 h-24 rounded-full 
+              bg-gray-500 hover:bg-gray-600 
+              text-white
+              flex items-center justify-center
+              transition-all duration-200
+              shadow-lg hover:shadow-xl
+              focus:outline-none focus:ring-4 focus:ring-gray-300
+            "
+            aria-label="Włącz mikrofon"
+          >
+            <MicrophoneOffIcon />
+          </button>
+        )}
+
+        {/* Mic ON - listening (click to disable) */}
+        {displayState === 'mic-on' && (
+          <button
+            onClick={handleToggleMic}
             className="
               w-24 h-24 rounded-full 
               bg-blue-500 hover:bg-blue-600 
@@ -239,69 +244,38 @@ export function VoiceControlsRealtime() {
               animate-pulse
               focus:outline-none focus:ring-4 focus:ring-blue-300
             "
-            aria-label="Zakończ rozmowę"
+            aria-label="Wyłącz mikrofon"
           >
             <MicrophoneIcon />
           </button>
         )}
 
-        {/* Thinking indicator */}
-        {displayState === 'thinking' && (
-          <button
-            onClick={handleEndConversation}
-            className="
-              w-24 h-24 rounded-full 
-              bg-yellow-500 hover:bg-yellow-600
-              text-white
-              flex items-center justify-center
-              shadow-lg hover:shadow-xl
-              focus:outline-none focus:ring-4 focus:ring-yellow-300
-            "
-            aria-label="Zakończ rozmowę"
-          >
-            <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-white"></div>
-          </button>
-        )}
-
-        {/* Speaking - can interrupt or end conversation */}
+        {/* Model speaking (mic auto-disabled) */}
         {displayState === 'speaking' && (
-          <button
-            onClick={handleInterrupt}
+          <div
             className="
               w-24 h-24 rounded-full 
-              bg-orange-500 hover:bg-orange-600 
+              bg-slate-600
               text-white
               flex items-center justify-center
-              transition-all duration-200
-              shadow-lg hover:shadow-xl
-              focus:outline-none focus:ring-4 focus:ring-orange-300
+              shadow-lg
+              animate-pulse
             "
-            aria-label="Przerwij odpowiedź"
+            aria-label="Model odpowiada"
           >
-            <StopIcon />
-          </button>
-        )}
-
-        {/* Conversing (between turns) - waiting for auto-listen to kick in */}
-        {displayState === 'conversing' && (
-          <button
-            onClick={handleEndConversation}
-            className="
-              w-24 h-24 rounded-full 
-              bg-purple-500 hover:bg-purple-600 
-              text-white
-              flex items-center justify-center
-              transition-all duration-200
-              shadow-lg hover:shadow-xl
-              focus:outline-none focus:ring-4 focus:ring-purple-300
-            "
-            aria-label="Zakończ rozmowę"
-          >
-            <MicrophoneIcon />
-          </button>
+            <SpeakingIcon />
+          </div>
         )}
       </div>
+
+      {/* Status text */}
+      <p className="text-sm text-gray-400 text-center min-h-[20px]">
+        {displayState === 'connecting' && 'Łączenie...'}
+        {displayState === 'ready' && 'Kliknij aby rozpocząć'}
+        {displayState === 'mic-off' && 'Mikrofon wyłączony'}
+        {displayState === 'mic-on' && 'Słucham...'}
+        {displayState === 'speaking' && 'Odpowiadam...'}
+      </p>
     </div>
   );
 }
-
