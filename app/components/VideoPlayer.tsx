@@ -208,9 +208,7 @@ export function VideoPlayer({
       {/* Primary Video */}
       <video
         ref={primaryVideoRef}
-        className={`w-full h-full object-cover transition-opacity duration-500 ${
-          isTransitioning ? 'opacity-50' : 'opacity-100'
-        }`}
+        className="w-full h-full object-cover"
         loop
         muted
         playsInline

@@ -47,8 +47,8 @@ export default function Home() {
         />
       </div>
 
-      {/* Controls - Fixed at Bottom */}
-      <div className="fixed bottom-0 left-0 right-0 bg-gradient-to-t from-gray-950 via-gray-950/95 to-transparent">
+      {/* Controls - Fixed at Bottom Right */}
+      <div className="fixed bottom-0 right-0 z-10 p-6">
         {/* Voice Controls - Realtime API only */}
         <VoiceControlsRealtime />
       </div>

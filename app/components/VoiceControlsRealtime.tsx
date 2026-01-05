@@ -12,14 +12,14 @@ import { useEffect, useCallback, useRef } from 'react';
 
 // Ikony SVG
 const MicrophoneIcon = () => (
-  <svg width="40" height="40" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <svg width="28" height="28" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
     <path d="M12 1C10.34 1 9 2.34 9 4V12C9 13.66 10.34 15 12 15C13.66 15 15 13.66 15 12V4C15 2.34 13.66 1 12 1Z" fill="currentColor"/>
     <path d="M19 10V12C19 15.87 15.87 19 12 19C8.13 19 5 15.87 5 12V10H3V12C3 16.42 6.28 20.11 10.5 20.86V24H13.5V20.86C17.72 20.11 21 16.42 21 12V10H19Z" fill="currentColor"/>
   </svg>
 );
 
 const MicrophoneOffIcon = () => (
-  <svg width="40" height="40" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <svg width="28" height="28" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
     <path d="M12 1C10.34 1 9 2.34 9 4V12C9 13.66 10.34 15 12 15C13.66 15 15 13.66 15 12V4C15 2.34 13.66 1 12 1Z" fill="currentColor" opacity="0.4"/>
     <path d="M19 10V12C19 15.87 15.87 19 12 19C8.13 19 5 15.87 5 12V10H3V12C3 16.42 6.28 20.11 10.5 20.86V24H13.5V20.86C17.72 20.11 21 16.42 21 12V10H19Z" fill="currentColor" opacity="0.4"/>
     <line x1="4" y1="4" x2="20" y2="20" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
@@ -27,13 +27,13 @@ const MicrophoneOffIcon = () => (
 );
 
 const PlayIcon = () => (
-  <svg width="40" height="40" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <svg width="28" height="28" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
     <path d="M8 5V19L19 12L8 5Z" fill="currentColor"/>
   </svg>
 );
 
 const SpeakingIcon = () => (
-  <svg width="40" height="40" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <svg width="28" height="28" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
     <path d="M3 9V15H7L12 20V4L7 9H3Z" fill="currentColor"/>
     <path d="M16 9C16 9 18 10.5 18 12C18 13.5 16 15 16 15" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
     <path d="M19 6C19 6 22 9 22 12C22 15 19 18 19 18" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
@@ -182,12 +182,12 @@ export function VoiceControlsRealtime() {
   }
 
   return (
-    <div className="flex flex-col items-center gap-4 p-8">
+    <div className="flex flex-col items-end gap-2">
       {/* Main Button */}
       <div className="relative">
         {/* Connecting spinner */}
         {displayState === 'connecting' && (
-          <div className="w-24 h-24 rounded-full bg-gray-600 flex items-center justify-center">
+          <div className="w-16 h-16 rounded-full bg-gray-600 flex items-center justify-center">
             <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-white"></div>
           </div>
         )}
@@ -197,7 +197,7 @@ export function VoiceControlsRealtime() {
           <button
             onClick={handleStart}
             className="
-              w-24 h-24 rounded-full 
+              w-16 h-16 rounded-full 
               bg-green-500 hover:bg-green-600 
               text-white
               flex items-center justify-center
@@ -216,7 +216,7 @@ export function VoiceControlsRealtime() {
           <button
             onClick={handleToggleMic}
             className="
-              w-24 h-24 rounded-full 
+              w-16 h-16 rounded-full 
               bg-gray-500 hover:bg-gray-600 
               text-white
               flex items-center justify-center
@@ -235,7 +235,7 @@ export function VoiceControlsRealtime() {
           <button
             onClick={handleToggleMic}
             className="
-              w-24 h-24 rounded-full 
+              w-16 h-16 rounded-full 
               bg-blue-500 hover:bg-blue-600 
               text-white
               flex items-center justify-center
@@ -254,7 +254,7 @@ export function VoiceControlsRealtime() {
         {displayState === 'speaking' && (
           <div
             className="
-              w-24 h-24 rounded-full 
+              w-16 h-16 rounded-full 
               bg-slate-600
               text-white
               flex items-center justify-center
@@ -268,14 +268,7 @@ export function VoiceControlsRealtime() {
         )}
       </div>
 
-      {/* Status text */}
-      <p className="text-sm text-gray-400 text-center min-h-[20px]">
-        {displayState === 'connecting' && 'Łączenie...'}
-        {displayState === 'ready' && 'Kliknij aby rozpocząć'}
-        {displayState === 'mic-off' && 'Mikrofon wyłączony'}
-        {displayState === 'mic-on' && 'Słucham...'}
-        {displayState === 'speaking' && 'Odpowiadam...'}
-      </p>
+      {/* Status text removed on request */}
     </div>
   );
 }
