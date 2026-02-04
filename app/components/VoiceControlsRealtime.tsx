@@ -8,35 +8,50 @@
 
 import { useAppStore } from '@/lib/store';
 import { useRealtimeVoice } from '@/lib/audio/useRealtimeVoice';
-import { useEffect, useCallback, useRef } from 'react';
+import { useEffect, useCallback, useRef, type CSSProperties } from 'react';
 
-// Ikony SVG
+// Ikony SVG (neutralne, bez skojarzeń z mikrofonem)
+const grassShapeStyle: CSSProperties = {
+  // Liść / źdźbło trawy: nieregularny kształt zamiast koła
+  clipPath: 'polygon(50% 0%, 70% 6%, 86% 20%, 94% 40%, 90% 62%, 76% 80%, 50% 100%, 24% 80%, 10% 62%, 6% 40%, 14% 20%, 30% 6%)',
+};
 const MicrophoneIcon = () => (
   <svg width="28" height="28" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-    <path d="M12 1C10.34 1 9 2.34 9 4V12C9 13.66 10.34 15 12 15C13.66 15 15 13.66 15 12V4C15 2.34 13.66 1 12 1Z" fill="currentColor"/>
-    <path d="M19 10V12C19 15.87 15.87 19 12 19C8.13 19 5 15.87 5 12V10H3V12C3 16.42 6.28 20.11 10.5 20.86V24H13.5V20.86C17.72 20.11 21 16.42 21 12V10H19Z" fill="currentColor"/>
+    {/* Drzewo / las */}
+    <circle cx="8" cy="8" r="4" fill="currentColor" />
+    <circle cx="14" cy="7" r="4" fill="currentColor" opacity="0.9" />
+    <circle cx="16.5" cy="11" r="3.5" fill="currentColor" opacity="0.85" />
+    <rect x="11" y="12" width="2.5" height="7" rx="1" fill="currentColor" />
+    <rect x="6.5" y="12.5" width="2.2" height="6.5" rx="1" fill="currentColor" opacity="0.9" />
   </svg>
 );
 
 const MicrophoneOffIcon = () => (
   <svg width="28" height="28" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-    <path d="M12 1C10.34 1 9 2.34 9 4V12C9 13.66 10.34 15 12 15C13.66 15 15 13.66 15 12V4C15 2.34 13.66 1 12 1Z" fill="currentColor" opacity="0.4"/>
-    <path d="M19 10V12C19 15.87 15.87 19 12 19C8.13 19 5 15.87 5 12V10H3V12C3 16.42 6.28 20.11 10.5 20.86V24H13.5V20.86C17.72 20.11 21 16.42 21 12V10H19Z" fill="currentColor" opacity="0.4"/>
+    {/* Drzewo z przekreśleniem */}
+    <circle cx="8" cy="8" r="4" fill="currentColor" opacity="0.45" />
+    <circle cx="14" cy="7" r="4" fill="currentColor" opacity="0.45" />
+    <circle cx="16.5" cy="11" r="3.5" fill="currentColor" opacity="0.45" />
+    <rect x="11" y="12" width="2.5" height="7" rx="1" fill="currentColor" opacity="0.45" />
+    <rect x="6.5" y="12.5" width="2.2" height="6.5" rx="1" fill="currentColor" opacity="0.45" />
     <line x1="4" y1="4" x2="20" y2="20" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
   </svg>
 );
 
 const PlayIcon = () => (
   <svg width="28" height="28" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-    <path d="M8 5V19L19 12L8 5Z" fill="currentColor"/>
+    {/* Górski start */}
+    <circle cx="17" cy="7" r="2.5" fill="currentColor" />
+    <path d="M3 19L9.5 10.5L13.5 15.5L18 9.5L21 19H3Z" fill="currentColor" />
   </svg>
 );
 
 const SpeakingIcon = () => (
   <svg width="28" height="28" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-    <path d="M3 9V15H7L12 20V4L7 9H3Z" fill="currentColor"/>
-    <path d="M16 9C16 9 18 10.5 18 12C18 13.5 16 15 16 15" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
-    <path d="M19 6C19 6 22 9 22 12C22 15 19 18 19 18" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
+    {/* Ognisko / płomień */}
+    <path d="M12 4C10.5 6 11.5 7.5 10 9C8.5 10.5 8.5 13.5 12 15C15.5 13.5 15.5 10.5 14 9C12.5 7.5 13.5 6 12 4Z" fill="currentColor"/>
+    <path d="M6 18L10 14.5" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
+    <path d="M18 18L14 14.5" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
   </svg>
 );
 
@@ -187,7 +202,10 @@ export function VoiceControlsRealtime() {
       <div className="relative">
         {/* Connecting spinner */}
         {displayState === 'connecting' && (
-          <div className="w-16 h-16 rounded-full bg-gray-600 flex items-center justify-center">
+          <div
+            className="w-16 h-16 bg-gray-600 flex items-center justify-center overflow-hidden"
+            style={grassShapeStyle}
+          >
             <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-white"></div>
           </div>
         )}
@@ -197,15 +215,17 @@ export function VoiceControlsRealtime() {
           <button
             onClick={handleStart}
             className="
-              w-16 h-16 rounded-full 
+              w-16 h-16 
               bg-green-500 hover:bg-green-600 
               text-white
               flex items-center justify-center
               transition-all duration-200
               shadow-lg hover:shadow-xl
               focus:outline-none focus:ring-4 focus:ring-green-300
+              overflow-hidden
             "
             aria-label="Rozpocznij"
+            style={grassShapeStyle}
           >
             <PlayIcon />
           </button>
@@ -216,15 +236,17 @@ export function VoiceControlsRealtime() {
           <button
             onClick={handleToggleMic}
             className="
-              w-16 h-16 rounded-full 
+              w-16 h-16 
               bg-gray-500 hover:bg-gray-600 
               text-white
               flex items-center justify-center
               transition-all duration-200
               shadow-lg hover:shadow-xl
               focus:outline-none focus:ring-4 focus:ring-gray-300
+              overflow-hidden
             "
-            aria-label="Włącz mikrofon"
+            aria-label="Aktywuj"
+            style={grassShapeStyle}
           >
             <MicrophoneOffIcon />
           </button>
@@ -235,7 +257,7 @@ export function VoiceControlsRealtime() {
           <button
             onClick={handleToggleMic}
             className="
-              w-16 h-16 rounded-full 
+              w-16 h-16 
               bg-blue-500 hover:bg-blue-600 
               text-white
               flex items-center justify-center
@@ -243,8 +265,10 @@ export function VoiceControlsRealtime() {
               shadow-lg hover:shadow-xl
               animate-pulse
               focus:outline-none focus:ring-4 focus:ring-blue-300
+              overflow-hidden
             "
-            aria-label="Wyłącz mikrofon"
+            aria-label="Dezaktywuj"
+            style={grassShapeStyle}
           >
             <MicrophoneIcon />
           </button>
@@ -254,14 +278,16 @@ export function VoiceControlsRealtime() {
         {displayState === 'speaking' && (
           <div
             className="
-              w-16 h-16 rounded-full 
+              w-16 h-16 
               bg-slate-600
               text-white
               flex items-center justify-center
               shadow-lg
               animate-pulse
+              overflow-hidden
             "
-            aria-label="Model odpowiada"
+            aria-label="Trwa odpowiedź"
+            style={grassShapeStyle}
           >
             <SpeakingIcon />
           </div>
