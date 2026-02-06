@@ -364,7 +364,15 @@ export function useRealtimeVoice({
       const tokenRes = await fetch('/api/realtime-voice', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ characterId: characterRef.current.id }),
+        body: JSON.stringify({
+          characterId: characterRef.current.id,
+          characterSnapshot: {
+            name: characterRef.current.name,
+            description: characterRef.current.description,
+            systemPrompt: characterRef.current.systemPrompt,
+            llmConfig: characterRef.current.llmConfig,
+          },
+        }),
       });
 
       if (!tokenRes.ok) {

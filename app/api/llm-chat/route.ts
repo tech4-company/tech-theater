@@ -6,6 +6,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import OpenAI from 'openai';
 import { getCharacterById } from '@/lib/characters';
+import type { Character } from '@/lib/types';
 
 // Initialize OpenAI client
 const openai = new OpenAI({
@@ -23,6 +24,47 @@ interface ChatRequest {
     content: string;
   }>;
   characterId: string;
+  characterSnapshot?: CharacterSnapshot;
+}
+
+type CharacterSnapshot = {
+  name?: unknown;
+  description?: unknown;
+  systemPrompt?: unknown;
+  llmConfig?: {
+    temperature?: unknown;
+    maxTokens?: unknown;
+    model?: unknown;
+  };
+};
+
+function applyCharacterSnapshot(
+  base: Character,
+  snapshot: CharacterSnapshot | null | undefined,
+): Character {
+  if (!snapshot || typeof snapshot !== 'object') {
+    return base;
+  }
+
+  const merged: Character = {
+    ...base,
+    llmConfig: {
+      ...base.llmConfig,
+    },
+  };
+
+  if (typeof snapshot.name === 'string') merged.name = snapshot.name;
+  if (typeof snapshot.description === 'string') merged.description = snapshot.description;
+  if (typeof snapshot.systemPrompt === 'string') merged.systemPrompt = snapshot.systemPrompt;
+
+  const llm = snapshot.llmConfig;
+  if (llm && typeof llm === 'object') {
+    if (typeof llm.temperature === 'number') merged.llmConfig.temperature = llm.temperature;
+    if (typeof llm.maxTokens === 'number') merged.llmConfig.maxTokens = llm.maxTokens;
+    if (typeof llm.model === 'string') merged.llmConfig.model = llm.model;
+  }
+
+  return merged;
 }
 
 export async function POST(request: NextRequest) {
@@ -37,7 +79,7 @@ export async function POST(request: NextRequest) {
 
     // Parse request
     const body: ChatRequest = await request.json();
-    const { messages, characterId } = body;
+    const { messages, characterId, characterSnapshot } = body;
 
     if (!messages || !Array.isArray(messages)) {
       return NextResponse.json(
@@ -62,10 +104,12 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    const resolvedCharacter = applyCharacterSnapshot(character, characterSnapshot);
+
     console.log('LLM Chat request:', {
       characterId,
-      characterName: character.name,
-      model: character.llmConfig.model,
+      characterName: resolvedCharacter.name,
+      model: resolvedCharacter.llmConfig.model,
       messagesCount: messages.length,
     });
 
@@ -73,7 +117,7 @@ export async function POST(request: NextRequest) {
     const apiMessages: Message[] = [
       {
         role: 'system',
-        content: character.systemPrompt,
+        content: resolvedCharacter.systemPrompt,
       },
       ...messages.map(msg => ({
         role: msg.role,
@@ -83,10 +127,10 @@ export async function POST(request: NextRequest) {
 
     // Call OpenAI GPT-5.2 (uses new parameter names)
     const completion = await openai.chat.completions.create({
-      model: character.llmConfig.model, // 'gpt-5.2'
+      model: resolvedCharacter.llmConfig.model, // 'gpt-5.2'
       messages: apiMessages,
-      temperature: character.llmConfig.temperature,
-      max_completion_tokens: character.llmConfig.maxTokens, // GPT-5.2 uses this instead of max_tokens
+      temperature: resolvedCharacter.llmConfig.temperature,
+      max_completion_tokens: resolvedCharacter.llmConfig.maxTokens, // GPT-5.2 uses this instead of max_tokens
       top_p: 1,
       frequency_penalty: 0,
       presence_penalty: 0,
@@ -108,7 +152,7 @@ export async function POST(request: NextRequest) {
       text: responseText,
       characterId,
       tokensUsed: completion.usage?.total_tokens,
-      model: character.llmConfig.model,
+      model: resolvedCharacter.llmConfig.model,
     });
 
   } catch (error: any) {

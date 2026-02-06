@@ -6,6 +6,47 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { getCharacterById } from '@/lib/characters';
+import type { Character } from '@/lib/types';
+
+type CharacterSnapshot = {
+  name?: unknown;
+  description?: unknown;
+  systemPrompt?: unknown;
+  llmConfig?: {
+    temperature?: unknown;
+    maxTokens?: unknown;
+    model?: unknown;
+  };
+};
+
+function applyCharacterSnapshot(
+  base: Character,
+  snapshot: CharacterSnapshot | null | undefined,
+): Character {
+  if (!snapshot || typeof snapshot !== 'object') {
+    return base;
+  }
+
+  const merged: Character = {
+    ...base,
+    llmConfig: {
+      ...base.llmConfig,
+    },
+  };
+
+  if (typeof snapshot.name === 'string') merged.name = snapshot.name;
+  if (typeof snapshot.description === 'string') merged.description = snapshot.description;
+  if (typeof snapshot.systemPrompt === 'string') merged.systemPrompt = snapshot.systemPrompt;
+
+  const llm = snapshot.llmConfig;
+  if (llm && typeof llm === 'object') {
+    if (typeof llm.temperature === 'number') merged.llmConfig.temperature = llm.temperature;
+    if (typeof llm.maxTokens === 'number') merged.llmConfig.maxTokens = llm.maxTokens;
+    if (typeof llm.model === 'string') merged.llmConfig.model = llm.model;
+  }
+
+  return merged;
+}
 
 export async function POST(request: NextRequest) {
   try {
@@ -19,7 +60,7 @@ export async function POST(request: NextRequest) {
 
     // Parse request
     const body = await request.json();
-    const { characterId } = body;
+    const { characterId, characterSnapshot } = body;
 
     if (!characterId) {
       return NextResponse.json(
@@ -37,9 +78,11 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    const resolvedCharacter = applyCharacterSnapshot(character, characterSnapshot);
+
     console.log('Realtime API token request:', {
       characterId,
-      characterName: character.name,
+      characterName: resolvedCharacter.name,
     });
 
     // Create ephemeral token via OpenAI API
@@ -83,7 +126,7 @@ export async function POST(request: NextRequest) {
       voice: 'alloy',
       sessionConfig: {
         modalities: ['text', 'audio'],
-        instructions: character.systemPrompt,
+        instructions: resolvedCharacter.systemPrompt,
         voice: 'alloy',
         input_audio_format: 'pcm16',
         output_audio_format: 'pcm16',
@@ -98,8 +141,8 @@ export async function POST(request: NextRequest) {
           prefix_padding_ms: 300,   // Audio before speech
           silence_duration_ms: 700, // Silence before triggering response
         },
-        temperature: character.llmConfig.temperature,
-        max_response_output_tokens: character.llmConfig.maxTokens,
+        temperature: resolvedCharacter.llmConfig.temperature,
+        max_response_output_tokens: resolvedCharacter.llmConfig.maxTokens,
       },
     });
 
