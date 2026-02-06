@@ -36,7 +36,7 @@ ELEVENLABS_API_KEY=...
 # App Config
 NEXT_PUBLIC_APP_URL=http://localhost:3000
 NODE_ENV=development
-```
+```.
 
 **Jak zdobyć klucze API:**
 

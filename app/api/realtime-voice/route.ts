@@ -96,7 +96,7 @@ export async function POST(request: NextRequest) {
       },
       body: JSON.stringify({
         model: 'gpt-4o-realtime-preview-2024-12-17',
-        voice: 'alloy', // OpenAI voices: alloy, echo, fable, onyx, nova, shimmer
+        voice: 'verse', // OpenAI voices: verse, alloy, echo, fable, onyx, nova, shimmer
       }),
     });
 
@@ -123,11 +123,11 @@ export async function POST(request: NextRequest) {
       client_secret: data.client_secret.value,
       expires_at: data.client_secret.expires_at,
       model: 'gpt-4o-realtime-preview-2024-12-17',
-      voice: 'alloy',
+      voice: 'verse',
       sessionConfig: {
         modalities: ['text', 'audio'],
         instructions: resolvedCharacter.systemPrompt,
-        voice: 'alloy',
+        voice: 'verse',
         input_audio_format: 'pcm16',
         output_audio_format: 'pcm16',
         input_audio_transcription: {
