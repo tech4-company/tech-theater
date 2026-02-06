@@ -33,14 +33,6 @@ export default function Home() {
     }
   }, [currentCharacter, setCurrentCharacter]);
 
-  useEffect(() => {
-    if (typeof window === 'undefined') return;
-    const dismissed = sessionStorage.getItem('characterEditorDismissed');
-    if (dismissed === 'true') {
-      setShowCharacterEditor(false);
-    }
-  }, []);
-
   const handleSaveCharacter = (updated: Character) => {
     saveCharacterOverride(updated.id, {
       name: updated.name,
@@ -48,12 +40,10 @@ export default function Home() {
       systemPrompt: updated.systemPrompt,
     });
     setCurrentCharacter(updated);
-    sessionStorage.setItem('characterEditorDismissed', 'true');
     setShowCharacterEditor(false);
   };
 
   const handleContinue = () => {
-    sessionStorage.setItem('characterEditorDismissed', 'true');
     setShowCharacterEditor(false);
   };
 
