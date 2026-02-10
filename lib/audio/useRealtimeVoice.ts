@@ -18,6 +18,7 @@ interface UseRealtimeVoiceOptions {
   onStateChange?: (state: RealtimeState) => void;
   onTranscript?: (text: string, isFinal: boolean) => void;
   onResponse?: (text: string) => void;
+  onResponseDone?: (response: any) => void;
   onError?: (error: Error) => void;
 }
 
@@ -57,15 +58,21 @@ const KEEPALIVE_INTERVAL = 30_000;
 // Reconnect delay
 const RECONNECT_DELAY = 2_000;
 // Silence detection settings
-const SILENCE_THRESHOLD = 0.01; // Volume level considered "silence"
-const SILENCE_DURATION_MS = 400; // How long silence must last to end speaking
+const SILENCE_THRESHOLD = 0.01; // RMS volume level considered "silence"
+const SILENCE_DURATION_MS = 1200; // How long silence must last to end speaking
+const SILENCE_FALLBACK_MS = 1200; // Fallback when analyser is unavailable
+const AUDIO_START_GRACE_MS = 500; // Wait a bit for audio to start
+const AUDIO_START_FALLBACK_MS = 6000; // If no audio energy, end speaking
+const FALLBACK_VOICE = 'alloy';
 const AUDIO_CHECK_INTERVAL_MS = 50; // How often to check audio level
+const DEBUG_REALTIME = true;
 
 export function useRealtimeVoice({
   character,
   onStateChange,
   onTranscript,
   onResponse,
+  onResponseDone,
   onError,
 }: UseRealtimeVoiceOptions): UseRealtimeVoiceReturn {
   const [isConnected, setIsConnected] = useState(false);
@@ -87,6 +94,10 @@ export function useRealtimeVoice({
   const silenceCheckIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const silenceStartRef = useRef<number | null>(null);
   const responseAudioDoneRef = useRef(false); // True when OpenAI finished sending audio
+  const responseStartedAtRef = useRef<number | null>(null);
+  const audioEnergyObservedRef = useRef(false);
+  const audioPlaybackStartedRef = useRef(false);
+  const responseRetryRef = useRef(0);
 
   // Refs for state that callbacks need without re-renders
   const isSessionActiveRef = useRef(false);
@@ -99,6 +110,9 @@ export function useRealtimeVoice({
 
   const updateState = useCallback(
     (newState: RealtimeState) => {
+      if (DEBUG_REALTIME) {
+        console.log('[realtime] state ->', newState);
+      }
       setState(newState);
       onStateChange?.(newState);
     },
@@ -108,6 +122,9 @@ export function useRealtimeVoice({
   const sendEvent = useCallback((event: Record<string, unknown>) => {
     const dc = dcRef.current;
     if (!dc || dc.readyState !== 'open') return;
+    if (DEBUG_REALTIME) {
+      console.log('[realtime] send event', event.type ?? 'unknown', event);
+    }
     dc.send(JSON.stringify(event));
   }, []);
 
@@ -132,7 +149,13 @@ export function useRealtimeVoice({
 
   // Called when we're sure the model has finished speaking
   const finishSpeaking = useCallback(() => {
+    if (DEBUG_REALTIME) {
+      console.log('[realtime] finishSpeaking');
+    }
     stopSilenceDetection();
+    responseStartedAtRef.current = null;
+    audioEnergyObservedRef.current = false;
+    audioPlaybackStartedRef.current = false;
     isSpeakingRef.current = false;
     setIsSpeaking(false);
 
@@ -146,18 +169,35 @@ export function useRealtimeVoice({
     }
   }, [setMicHardware, stopSilenceDetection, updateState]);
 
+  const resumeAudioContext = useCallback(() => {
+    const audioCtx = audioContextRef.current;
+    if (!audioCtx) return;
+    if (audioCtx.state === 'suspended') {
+      if (DEBUG_REALTIME) {
+        console.log('[realtime] audioContext resume (was suspended)');
+      }
+      void audioCtx.resume().catch(() => {});
+    }
+  }, []);
+
   // Start silence detection (called when response.audio.done arrives)
   const startSilenceDetection = useCallback(() => {
     responseAudioDoneRef.current = true;
+    if (DEBUG_REALTIME) {
+      console.log('[realtime] startSilenceDetection');
+    }
 
     // If we don't have analyser set up, fall back to timeout
     if (!analyserRef.current) {
       console.log('No analyser, using fallback timeout');
       setTimeout(() => {
         if (isSpeakingRef.current && responseAudioDoneRef.current) {
+          if (DEBUG_REALTIME) {
+            console.log('[realtime] fallback finishSpeaking after silence');
+          }
           finishSpeaking();
         }
-      }, 800);
+      }, SILENCE_FALLBACK_MS);
       return;
     }
 
@@ -165,7 +205,8 @@ export function useRealtimeVoice({
     if (silenceCheckIntervalRef.current) return;
 
     const analyser = analyserRef.current;
-    const dataArray = new Uint8Array(analyser.frequencyBinCount);
+    resumeAudioContext();
+    const dataArray = new Uint8Array(analyser.fftSize);
 
     silenceCheckIntervalRef.current = setInterval(() => {
       if (!isSpeakingRef.current || !responseAudioDoneRef.current) {
@@ -173,19 +214,52 @@ export function useRealtimeVoice({
         return;
       }
 
-      analyser.getByteFrequencyData(dataArray);
+      analyser.getByteTimeDomainData(dataArray);
 
-      // Calculate average volume (0-255 scale)
-      let sum = 0;
+      // Calculate RMS volume (0-1 scale)
+      let sumSquares = 0;
       for (let i = 0; i < dataArray.length; i++) {
-        sum += dataArray[i];
+        const v = (dataArray[i] - 128) / 128;
+        sumSquares += v * v;
       }
-      const avgVolume = sum / dataArray.length / 255; // Normalize to 0-1
+      const rmsVolume = Math.sqrt(sumSquares / dataArray.length);
 
-      if (avgVolume < SILENCE_THRESHOLD) {
+      const responseStartedAt = responseStartedAtRef.current;
+      const elapsedSinceStart =
+        typeof responseStartedAt === 'number' ? Date.now() - responseStartedAt : 0;
+
+      if (rmsVolume >= SILENCE_THRESHOLD) {
+        if (!audioEnergyObservedRef.current && DEBUG_REALTIME) {
+          console.log('[realtime] audio energy observed', { rmsVolume });
+        }
+        audioEnergyObservedRef.current = true;
+        silenceStartRef.current = null;
+        return;
+      }
+
+      // If we haven't seen any audio yet, don't start silence timer too early
+      if (!audioEnergyObservedRef.current) {
+        if (!audioPlaybackStartedRef.current && elapsedSinceStart < AUDIO_START_GRACE_MS) {
+          return;
+        }
+        if (elapsedSinceStart >= AUDIO_START_FALLBACK_MS) {
+          if (DEBUG_REALTIME) {
+            console.log('[realtime] no audio energy fallback -> finishSpeaking');
+          }
+          finishSpeaking();
+        }
+        return;
+      }
+
+      if (rmsVolume < SILENCE_THRESHOLD) {
         // Silence detected
         if (silenceStartRef.current === null) {
           silenceStartRef.current = Date.now();
+          if (DEBUG_REALTIME) {
+            console.log('[realtime] silence start', {
+              rmsVolume,
+            });
+          }
         } else if (Date.now() - silenceStartRef.current >= SILENCE_DURATION_MS) {
           // Silence lasted long enough - model finished speaking
           console.log('Silence detected, finishing speaking');
@@ -196,7 +270,7 @@ export function useRealtimeVoice({
         silenceStartRef.current = null;
       }
     }, AUDIO_CHECK_INTERVAL_MS);
-  }, [finishSpeaking, stopSilenceDetection]);
+  }, [finishSpeaking, resumeAudioContext, stopSilenceDetection]);
 
   // Clear keepalive
   const clearKeepalive = useCallback(() => {
@@ -217,6 +291,9 @@ export function useRealtimeVoice({
   // Disconnect (cleanup)
   const disconnect = useCallback(() => {
     try {
+      if (DEBUG_REALTIME) {
+        console.log('[realtime] disconnect');
+      }
       clearKeepalive();
       stopSilenceDetection();
 
@@ -277,29 +354,58 @@ export function useRealtimeVoice({
     (message: any) => {
       const type = message?.type as string | undefined;
       if (!type) return;
+      if (DEBUG_REALTIME) {
+        console.log('[realtime] recv event', type);
+      }
 
       switch (type) {
         case 'session.created':
         case 'session.updated':
           setIsConnected(true);
+          if (DEBUG_REALTIME) {
+            console.log('[realtime] session ready', {
+              isSessionActive: isSessionActiveRef.current,
+            });
+            if (message?.session) {
+              console.log('[realtime] session details', {
+                voice: message.session.voice,
+                modalities: message.session.modalities,
+                output_audio_format: message.session.output_audio_format,
+                input_audio_format: message.session.input_audio_format,
+              });
+            }
+          }
           if (!isSessionActiveRef.current) {
             updateState('idle');
           }
           break;
 
         case 'input_audio_buffer.speech_started':
-          // User started speaking
-          updateState('listening');
+          // User started speaking (ignore while model is speaking)
+          if (!isSpeakingRef.current) {
+            updateState('listening');
+          } else if (DEBUG_REALTIME) {
+            console.log('[realtime] speech_started ignored (model speaking)');
+          }
           break;
 
         case 'input_audio_buffer.speech_stopped':
-          // User stopped speaking → model will think
-          updateState('thinking');
+          // User stopped speaking → model will think (ignore while model is speaking)
+          if (!isSpeakingRef.current) {
+            updateState('thinking');
+          } else if (DEBUG_REALTIME) {
+            console.log('[realtime] speech_stopped ignored (model speaking)');
+          }
           break;
 
         case 'conversation.item.input_audio_transcription.completed':
           if (message.transcript) {
             onTranscript?.(message.transcript, true);
+          }
+          break;
+        case 'conversation.item.input_audio_transcription.failed':
+          if (DEBUG_REALTIME) {
+            console.log('[realtime] transcription failed', message?.error ?? message);
           }
           break;
 
@@ -317,6 +423,33 @@ export function useRealtimeVoice({
 
         case 'response.created':
           // Model starts speaking → MIC OFF (never interrupt!)
+          stopSilenceDetection();
+          resumeAudioContext();
+          if (DEBUG_REALTIME) {
+            console.log('[realtime] response.created -> speaking');
+            const pc = pcRef.current;
+            if (pc) {
+              console.log('[realtime] pc state', {
+                connectionState: pc.connectionState,
+                iceConnectionState: pc.iceConnectionState,
+                signalingState: pc.signalingState,
+              });
+              console.log(
+                '[realtime] receivers',
+                pc.getReceivers().map((r) => ({
+                  kind: r.track?.kind,
+                  id: r.track?.id,
+                  readyState: r.track?.readyState,
+                  enabled: r.track?.enabled,
+                  muted: r.track?.muted,
+                })),
+              );
+            }
+          }
+          responseStartedAtRef.current = Date.now();
+          audioEnergyObservedRef.current = false;
+          audioPlaybackStartedRef.current = false;
+          responseRetryRef.current = 0;
           isSpeakingRef.current = true;
           responseAudioDoneRef.current = false;
           setIsSpeaking(true);
@@ -328,12 +461,90 @@ export function useRealtimeVoice({
         case 'response.audio.done':
           // OpenAI finished SENDING audio - but playback continues
           // Start silence detection to know when playback actually ends
+          if (DEBUG_REALTIME) {
+            console.log('[realtime] response.audio.done');
+          }
           console.log('response.audio.done - starting silence detection');
           startSilenceDetection();
           break;
 
+        case 'response.audio.delta':
+          if (DEBUG_REALTIME) {
+            const size =
+              typeof message?.delta === 'string'
+                ? message.delta.length
+                : Array.isArray(message?.delta)
+                  ? message.delta.length
+                  : undefined;
+            console.log('[realtime] response.audio.delta', { size });
+          }
+          break;
+
         case 'response.done':
           // Response complete (including text) - ensure silence detection is running
+          onResponseDone?.(message?.response);
+          const statusDetails = message?.response?.status_details;
+          if (DEBUG_REALTIME) {
+            const outputTypes = Array.isArray(message?.response?.output)
+              ? message.response.output.map((o: any) => o?.type).filter(Boolean)
+              : undefined;
+            console.log('[realtime] response.done details', {
+              status: message?.response?.status,
+              outputTypes,
+              statusDetails: message?.response?.status_details,
+            });
+            if (statusDetails) {
+              console.log('[realtime] response.done status_details (json)', JSON.stringify(statusDetails));
+            }
+          }
+          if (message?.response?.status === 'failed') {
+            const statusText = JSON.stringify(statusDetails ?? '');
+            const isRateLimited = /rate_limit|429|quota|insufficient/i.test(statusText);
+            const shouldRetry = responseRetryRef.current < 1 && !isRateLimited;
+
+            if (DEBUG_REALTIME) {
+              console.log('[realtime] response failed meta', {
+                shouldRetry,
+                isRateLimited,
+                statusText,
+              });
+            }
+
+            if (shouldRetry) {
+              responseRetryRef.current += 1;
+              if (DEBUG_REALTIME) {
+                console.log('[realtime] retrying response with fallback voice');
+              }
+
+              const session = sessionConfigRef.current ?? {};
+              sessionConfigRef.current = {
+                ...session,
+                voice: FALLBACK_VOICE,
+              };
+
+              sendEvent({
+                type: 'session.update',
+                session: sessionConfigRef.current,
+              });
+
+              // Request a fresh response for the last user input
+              sendEvent({
+                type: 'response.create',
+                response: {
+                  modalities: ['audio', 'text'],
+                },
+              });
+
+              updateState('thinking');
+              break;
+            }
+
+            if (DEBUG_REALTIME) {
+              console.log('[realtime] response failed -> finishSpeaking');
+            }
+            finishSpeaking();
+            break;
+          }
           if (isSpeakingRef.current && !responseAudioDoneRef.current) {
             // In case response.audio.done didn't fire
             console.log('response.done - starting silence detection (fallback)');
@@ -351,7 +562,16 @@ export function useRealtimeVoice({
           break;
       }
     },
-    [onResponse, onTranscript, setMicHardware, startSilenceDetection, updateState],
+    [
+      onResponse,
+      onResponseDone,
+      onTranscript,
+      resumeAudioContext,
+      setMicHardware,
+      startSilenceDetection,
+      stopSilenceDetection,
+      updateState,
+    ],
   );
 
   // Connect to Realtime API via WebRTC
@@ -359,6 +579,9 @@ export function useRealtimeVoice({
     try {
       updateState('connecting');
       setError(null);
+      if (DEBUG_REALTIME) {
+        console.log('[realtime] connect start');
+      }
 
       // 1) Get ephemeral token + sessionConfig from backend
       const tokenRes = await fetch('/api/realtime-voice', {
@@ -381,6 +604,13 @@ export function useRealtimeVoice({
       }
 
       const tokenData = (await tokenRes.json()) as RealtimeTokenResponse;
+      if (DEBUG_REALTIME) {
+        console.log('[realtime] token ok', {
+          mode: tokenData.mode,
+          model: tokenData.model,
+          voice: tokenData.voice,
+        });
+      }
       const bearer =
         tokenData.mode === 'ephemeral' ? tokenData.client_secret : tokenData.apiKey;
 
@@ -392,10 +622,37 @@ export function useRealtimeVoice({
       });
       pcRef.current = pc;
 
+      pc.onconnectionstatechange = () => {
+        if (DEBUG_REALTIME) {
+          console.log('[realtime] connection state', pc.connectionState);
+        }
+      };
+
+      pc.onsignalingstatechange = () => {
+        if (DEBUG_REALTIME) {
+          console.log('[realtime] signaling state', pc.signalingState);
+        }
+      };
+
+      pc.onicegatheringstatechange = () => {
+        if (DEBUG_REALTIME) {
+          console.log('[realtime] ice gathering state', pc.iceGatheringState);
+        }
+      };
+
+      pc.onicecandidateerror = (event) => {
+        if (DEBUG_REALTIME) {
+          console.log('[realtime] ice candidate error', event);
+        }
+      };
+
       // Handle ICE connection state changes (for auto-reconnect)
       pc.oniceconnectionstatechange = () => {
         const iceState = pc.iceConnectionState;
         console.log('ICE connection state:', iceState);
+        if (DEBUG_REALTIME) {
+          console.log('[realtime] ice state', iceState);
+        }
 
         if (iceState === 'disconnected' || iceState === 'failed') {
           console.warn('WebRTC disconnected, will reconnect...');
@@ -429,13 +686,99 @@ export function useRealtimeVoice({
       // Remote audio → <audio> element + AudioContext for analysis
       const audioEl = new Audio();
       audioEl.autoplay = true;
+      audioEl.onloadedmetadata = () => {
+        if (DEBUG_REALTIME) {
+          console.log('[realtime] audio loaded metadata', {
+            readyState: audioEl.readyState,
+            duration: audioEl.duration,
+          });
+        }
+      };
+      audioEl.oncanplay = () => {
+        if (DEBUG_REALTIME) {
+          console.log('[realtime] audio canplay', { readyState: audioEl.readyState });
+        }
+      };
+      audioEl.onplay = () => {
+        if (DEBUG_REALTIME) {
+          console.log('[realtime] audio play');
+        }
+      };
+      audioEl.onplaying = () => {
+        audioPlaybackStartedRef.current = true;
+        if (DEBUG_REALTIME) {
+          console.log('[realtime] audio playing');
+        }
+      };
+      audioEl.onpause = () => {
+        if (DEBUG_REALTIME) {
+          console.log('[realtime] audio paused');
+        }
+      };
+      audioEl.onwaiting = () => {
+        if (DEBUG_REALTIME) {
+          console.log('[realtime] audio waiting');
+        }
+      };
+      audioEl.onstalled = () => {
+        if (DEBUG_REALTIME) {
+          console.log('[realtime] audio stalled');
+        }
+      };
+      audioEl.onended = () => {
+        if (DEBUG_REALTIME) {
+          console.log('[realtime] audio ended');
+        }
+      };
+      audioEl.onerror = () => {
+        if (DEBUG_REALTIME) {
+          console.log('[realtime] audio error', audioEl.error);
+        }
+      };
       remoteAudioRef.current = audioEl;
 
       pc.ontrack = (e) => {
         const [stream] = e.streams;
         if (stream && remoteAudioRef.current) {
+          if (DEBUG_REALTIME) {
+            console.log('[realtime] remote audio track received', {
+              trackId: e.track?.id,
+              kind: e.track?.kind,
+              readyState: e.track?.readyState,
+              enabled: e.track?.enabled,
+              muted: e.track?.muted,
+              streamTracks: stream.getTracks().map((t) => ({
+                kind: t.kind,
+                id: t.id,
+                readyState: t.readyState,
+                enabled: t.enabled,
+                muted: t.muted,
+              })),
+            });
+          }
+          if (e.track) {
+            e.track.onmute = () => {
+              if (DEBUG_REALTIME) {
+                console.log('[realtime] remote track muted');
+              }
+            };
+            e.track.onunmute = () => {
+              if (DEBUG_REALTIME) {
+                console.log('[realtime] remote track unmuted');
+              }
+            };
+            e.track.onended = () => {
+              if (DEBUG_REALTIME) {
+                console.log('[realtime] remote track ended');
+              }
+            };
+          }
           remoteAudioRef.current.srcObject = stream;
-          void remoteAudioRef.current.play().catch(() => {});
+          void remoteAudioRef.current.play().catch((err) => {
+            if (DEBUG_REALTIME) {
+              console.log('[realtime] audio play() failed', err);
+            }
+          });
 
           // Set up AudioContext for silence detection
           try {
@@ -468,6 +811,9 @@ export function useRealtimeVoice({
       };
 
       dc.onopen = () => {
+        if (DEBUG_REALTIME) {
+          console.log('[realtime] data channel open');
+        }
         if (sessionConfigRef.current) {
           sendEvent({
             type: 'session.update',
@@ -478,7 +824,16 @@ export function useRealtimeVoice({
       };
 
       dc.onclose = () => {
+        if (DEBUG_REALTIME) {
+          console.log('[realtime] data channel closed');
+        }
         clearKeepalive();
+      };
+
+      dc.onerror = () => {
+        if (DEBUG_REALTIME) {
+          console.log('[realtime] data channel error');
+        }
       };
 
       // Mic: add track but keep disabled until user explicitly enables
@@ -515,6 +870,13 @@ export function useRealtimeVoice({
 
       const answerSdp = await answerRes.text();
       await pc.setRemoteDescription({ type: 'answer', sdp: answerSdp });
+      if (DEBUG_REALTIME) {
+        console.log('[realtime] remote description set', {
+          connectionState: pc.connectionState,
+          iceConnectionState: pc.iceConnectionState,
+          signalingState: pc.signalingState,
+        });
+      }
 
       setIsConnected(true);
       updateState('idle');
@@ -542,6 +904,9 @@ export function useRealtimeVoice({
     isSessionActiveRef.current = true;
     setIsSessionActive(true);
     updateState('idle');
+    if (DEBUG_REALTIME) {
+      console.log('[realtime] session started');
+    }
   }, [isConnected, updateState]);
 
   // End session (user wants to stop) - but keep connection alive
@@ -553,12 +918,18 @@ export function useRealtimeVoice({
     setIsMicrophoneOn(false);
     stopSilenceDetection();
     updateState('idle');
+    if (DEBUG_REALTIME) {
+      console.log('[realtime] session ended');
+    }
   }, [setMicHardware, stopSilenceDetection, updateState]);
 
   // Toggle microphone (user controls this)
   const setMicrophoneEnabled = useCallback(
     (enabled: boolean) => {
       userWantsMicOnRef.current = enabled;
+      if (DEBUG_REALTIME) {
+        console.log('[realtime] mic intent ->', enabled);
+      }
 
       // Only actually enable mic if model is NOT speaking
       if (enabled && !isSpeakingRef.current) {

@@ -117,7 +117,8 @@ export async function POST(request: NextRequest) {
 
     const data = await response.json();
 
-    const responseSilenceMs = Math.floor(3000 + Math.random() * 1000);
+    const enableInputTranscription =
+      process.env.REALTIME_ENABLE_TRANSCRIPTION === 'true';
 
     // Return ephemeral token and session config
     return NextResponse.json({
@@ -132,16 +133,20 @@ export async function POST(request: NextRequest) {
         voice: 'verse',
         input_audio_format: 'pcm16',
         output_audio_format: 'pcm16',
-        input_audio_transcription: {
-          model: 'whisper-1',
-        },
+        ...(enableInputTranscription
+          ? {
+              input_audio_transcription: {
+                model: 'whisper-1',
+              },
+            }
+          : {}),
         // Server VAD for automatic silence detection
         // Echo is prevented client-side by blocking audio during model speech
         turn_detection: {
           type: 'server_vad',
           threshold: 0.5,           // Sensitivity (0.0-1.0)
           prefix_padding_ms: 300,   // Audio before speech
-          silence_duration_ms: responseSilenceMs, // 3–4s ciszy przed odpowiedzią
+          silence_duration_ms: 1000, // 1s ciszy przed odpowiedzią
         },
         temperature: resolvedCharacter.llmConfig.temperature,
         max_response_output_tokens: resolvedCharacter.llmConfig.maxTokens,

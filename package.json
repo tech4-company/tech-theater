@@ -9,7 +9,6 @@
     "lint": "eslint"
   },
   "dependencies": {
-    "@next/swc-darwin-arm64": "^16.1.6",
     "@radix-ui/react-icons": "^1.3.2",
     "next": "16.0.10",
     "openai": "^6.10.0",

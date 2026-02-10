@@ -8,7 +8,7 @@
 
 import { useAppStore } from '@/lib/store';
 import { useRealtimeVoice } from '@/lib/audio/useRealtimeVoice';
-import { useEffect, useCallback, useRef, type CSSProperties } from 'react';
+import { useEffect, useCallback, useRef, useState, type CSSProperties } from 'react';
 import type { IntroStatus, OutroStatus } from '@/lib/types';
 
 // Ikony SVG (neutralne, bez skojarzeń z mikrofonem)
@@ -73,9 +73,8 @@ export function VoiceControlsRealtime() {
   const setIntroStatus = useAppStore((s) => s.setIntroStatus);
   const outroStatus = useAppStore((s) => s.outroStatus ?? 'idle');
   const setOutroStatus = useAppStore((s) => s.setOutroStatus);
-  const userMessageCount = useAppStore((s) =>
-    s.messages.reduce((count, msg) => (msg.role === 'user' ? count + 1 : count), 0),
-  );
+  const [assistantResponseCount, setAssistantResponseCount] = useState(0);
+  const assistantResponseCountRef = useRef(0);
   const applyIntroStatus = useCallback(
     (status: IntroStatus) => {
       if (setIntroStatus) {
@@ -143,6 +142,12 @@ export function VoiceControlsRealtime() {
       };
       addMessage(assistantMessage);
     },
+    onResponseDone: (response) => {
+      const status = response?.status;
+      if (status === 'failed') return;
+      assistantResponseCountRef.current += 1;
+      setAssistantResponseCount(assistantResponseCountRef.current);
+    },
     onError: (error) => {
       console.error('Realtime API error:', error);
       // Don't show alert for minor errors, just log
@@ -158,6 +163,19 @@ export function VoiceControlsRealtime() {
   const isMounted = useRef(true);
   const pendingIntroStart = useRef(false);
   const pendingOutroTrigger = useRef(false);
+  const wasSessionActiveRef = useRef(false);
+
+  useEffect(() => {
+    if (isSessionActive && !wasSessionActiveRef.current) {
+      assistantResponseCountRef.current = 0;
+      setAssistantResponseCount(0);
+    }
+    if (!isSessionActive && wasSessionActiveRef.current) {
+      assistantResponseCountRef.current = 0;
+      setAssistantResponseCount(0);
+    }
+    wasSessionActiveRef.current = isSessionActive;
+  }, [isSessionActive]);
 
   useEffect(() => {
     if (introStatus === 'armed' && !pendingIntroStart.current) {
@@ -178,12 +196,18 @@ export function VoiceControlsRealtime() {
 
   useEffect(() => {
     if (outroStatus !== 'idle') return;
-    if (userMessageCount < 4) return;
+    if (assistantResponseCount < 4) return;
     if (isSpeaking) return;
     if (!isSessionActive) return;
     if (pendingOutroTrigger.current) return;
     triggerOutro();
-  }, [isSpeaking, isSessionActive, outroStatus, triggerOutro, userMessageCount]);
+  }, [
+    assistantResponseCount,
+    isSpeaking,
+    isSessionActive,
+    outroStatus,
+    triggerOutro,
+  ]);
 
   // Auto-connect on mount if character is available
   useEffect(() => {

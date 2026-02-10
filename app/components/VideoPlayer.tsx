@@ -232,9 +232,19 @@ export function VideoPlayer({
     if (!video || isLoading) return;
 
     const shouldAutoplay = isOutroVideo ? isOutroPlaying : !isIntroVideo || isIntroPlaying;
+    const shouldFreezeOutro = isOutroVideo && !isOutroPlaying;
 
     const playVideo = async () => {
       try {
+        if (shouldFreezeOutro) {
+          video.pause();
+          try {
+            if (Number.isFinite(video.duration) && video.duration > 0) {
+              video.currentTime = Math.max(0, video.duration - 0.05);
+            }
+          } catch {}
+          return;
+        }
         video.load();
         if (shouldAutoplay) {
           await video.play();
@@ -259,6 +269,12 @@ export function VideoPlayer({
         return;
       }
       if (isOutroVideo && isOutroPlaying) {
+        try {
+          video.pause();
+          if (Number.isFinite(video.duration) && video.duration > 0) {
+            video.currentTime = Math.max(0, video.duration - 0.05);
+          }
+        } catch {}
         applyOutroStatus('ended');
         return;
       }
