@@ -9,6 +9,7 @@
 import { useAppStore } from '@/lib/store';
 import { useRealtimeVoice } from '@/lib/audio/useRealtimeVoice';
 import { useEffect, useCallback, useRef, type CSSProperties } from 'react';
+import type { IntroStatus, OutroStatus } from '@/lib/types';
 
 // Ikony SVG (neutralne, bez skojarzeń z mikrofonem)
 const grassShapeStyle: CSSProperties = {
@@ -46,6 +47,15 @@ const PlayIcon = () => (
   </svg>
 );
 
+const VideoPlayIcon = () => (
+  <svg width="28" height="28" viewBox="0 0 24 24" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
+    {/* Neutralny znak - podobny do zielonego przycisku */}
+    <circle cx="12" cy="12" r="4.5" fill="currentColor" />
+    <circle cx="18" cy="6" r="2" fill="currentColor" opacity="0.8" />
+    <path d="M4 18L8.5 12.5L11.5 15.5L15 11.5L20 18H4Z" fill="currentColor" opacity="0.85" />
+  </svg>
+);
+
 const SpeakingIcon = () => (
   <svg width="28" height="28" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
     {/* Ognisko / płomień */}
@@ -59,6 +69,33 @@ export function VoiceControlsRealtime() {
   const setState = useAppStore((s) => s.setState);
   const addMessage = useAppStore((s) => s.addMessage);
   const currentCharacter = useAppStore((s) => s.currentCharacter);
+  const introStatus = useAppStore((s) => s.introStatus ?? 'idle');
+  const setIntroStatus = useAppStore((s) => s.setIntroStatus);
+  const outroStatus = useAppStore((s) => s.outroStatus ?? 'idle');
+  const setOutroStatus = useAppStore((s) => s.setOutroStatus);
+  const userMessageCount = useAppStore((s) =>
+    s.messages.reduce((count, msg) => (msg.role === 'user' ? count + 1 : count), 0),
+  );
+  const applyIntroStatus = useCallback(
+    (status: IntroStatus) => {
+      if (setIntroStatus) {
+        setIntroStatus(status);
+      } else {
+        useAppStore.setState({ introStatus: status });
+      }
+    },
+    [setIntroStatus],
+  );
+  const applyOutroStatus = useCallback(
+    (status: OutroStatus) => {
+      if (setOutroStatus) {
+        setOutroStatus(status);
+      } else {
+        useAppStore.setState({ outroStatus: status });
+      }
+    },
+    [setOutroStatus],
+  );
 
   // Realtime voice hook
   const {
@@ -119,6 +156,34 @@ export function VoiceControlsRealtime() {
   // Track if we've already initiated connection
   const hasInitiatedConnection = useRef(false);
   const isMounted = useRef(true);
+  const pendingIntroStart = useRef(false);
+  const pendingOutroTrigger = useRef(false);
+
+  useEffect(() => {
+    if (introStatus === 'armed' && !pendingIntroStart.current) {
+      pendingIntroStart.current = true;
+    }
+  }, [introStatus]);
+
+  const triggerOutro = useCallback(() => {
+    if (outroStatus !== 'idle') return;
+    pendingOutroTrigger.current = true;
+    applyIntroStatus('idle');
+    applyOutroStatus('playing');
+    try {
+      setMicrophoneEnabled(false);
+      endSession();
+    } catch {}
+  }, [applyIntroStatus, applyOutroStatus, endSession, outroStatus, setMicrophoneEnabled]);
+
+  useEffect(() => {
+    if (outroStatus !== 'idle') return;
+    if (userMessageCount < 4) return;
+    if (isSpeaking) return;
+    if (!isSessionActive) return;
+    if (pendingOutroTrigger.current) return;
+    triggerOutro();
+  }, [isSpeaking, isSessionActive, outroStatus, triggerOutro, userMessageCount]);
 
   // Auto-connect on mount if character is available
   useEffect(() => {
@@ -152,15 +217,38 @@ export function VoiceControlsRealtime() {
       return;
     }
 
-    try {
-      await startSession();
-      // Auto-enable mic when starting
-      setMicrophoneEnabled(true);
-    } catch (err) {
-      console.error('Failed to start session:', err);
-      alert(`Błąd: ${err instanceof Error ? err.message : 'Unknown error'}`);
-    }
-  }, [isConnected, startSession, setMicrophoneEnabled]);
+    pendingIntroStart.current = true;
+    applyIntroStatus('armed');
+  }, [applyIntroStatus, isConnected]);
+
+  const handlePlayIntro = useCallback(() => {
+    if (introStatus !== 'armed') return;
+    applyIntroStatus('playing');
+  }, [applyIntroStatus, introStatus]);
+
+  useEffect(() => {
+    if (!pendingIntroStart.current) return;
+    if (introStatus !== 'idle') return;
+
+    const startAfterIntro = async () => {
+      if (!isConnected) {
+        alert('Nie połączono z Realtime API. Spróbuj odświeżyć stronę.');
+        return;
+      }
+
+      try {
+        await startSession();
+        // Auto-enable mic when starting
+        setMicrophoneEnabled(true);
+      } catch (err) {
+        console.error('Failed to start session:', err);
+        alert(`Błąd: ${err instanceof Error ? err.message : 'Unknown error'}`);
+      }
+    };
+
+    pendingIntroStart.current = false;
+    void startAfterIntro();
+  }, [introStatus, isConnected, setMicrophoneEnabled, startSession]);
 
   // Toggle mic handler
   const handleToggleMic = useCallback(() => {
@@ -177,6 +265,9 @@ export function VoiceControlsRealtime() {
     if (isMicrophoneOn) return 'mic-on';
     return 'mic-off';
   })();
+
+  const isIntroActive = introStatus === 'armed' || introStatus === 'playing';
+  const isOutroActive = outroStatus === 'playing' || outroStatus === 'ended';
 
   // Show error if critical
   if (realtimeError && !isConnected) {
@@ -212,23 +303,70 @@ export function VoiceControlsRealtime() {
 
         {/* Start button (connected but not started) */}
         {displayState === 'ready' && (
-          <button
-            onClick={handleStart}
-            className="
-              w-16 h-16 
-              bg-green-500 hover:bg-green-600 
-              text-white
-              flex items-center justify-center
-              transition-all duration-200
-              shadow-lg hover:shadow-xl
-              focus:outline-none focus:ring-4 focus:ring-green-300
-              overflow-hidden
-            "
-            aria-label="Rozpocznij"
-            style={grassShapeStyle}
-          >
-            <PlayIcon />
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={handleStart}
+              disabled={isIntroActive || isOutroActive}
+              className={`
+                w-16 h-16 
+                bg-green-500 hover:bg-green-600 
+                text-white
+                flex items-center justify-center
+                transition-all duration-200
+                shadow-lg hover:shadow-xl
+                focus:outline-none focus:ring-4 focus:ring-green-300
+                overflow-hidden
+                ${isIntroActive || isOutroActive ? 'opacity-50 cursor-not-allowed hover:bg-green-500' : ''}
+              `}
+              aria-label="Rozpocznij"
+              style={grassShapeStyle}
+            >
+              <PlayIcon />
+            </button>
+            {introStatus === 'armed' && (
+              <button
+                onClick={handlePlayIntro}
+                className="
+                  w-16 h-16 
+                  bg-emerald-500 hover:bg-emerald-600 
+                  text-white
+                  flex items-center justify-center
+                  transition-all duration-200
+                  shadow-lg hover:shadow-xl
+                  focus:outline-none focus:ring-4 focus:ring-emerald-300
+                  overflow-hidden
+                "
+                aria-label="Wejście"
+                style={grassShapeStyle}
+              >
+                <VideoPlayIcon />
+              </button>
+            )}
+            {outroStatus === 'ended' && (
+              <button
+                onClick={() => {
+                  pendingOutroTrigger.current = false;
+                  applyOutroStatus('idle');
+                  applyIntroStatus('armed');
+                  setState('waiting');
+                }}
+                className="
+                  w-14 h-14 
+                  bg-orange-500 hover:bg-orange-600 
+                  text-white
+                  flex items-center justify-center
+                  transition-all duration-200
+                  shadow-lg hover:shadow-xl
+                  focus:outline-none focus:ring-4 focus:ring-orange-300
+                  rounded-full
+                "
+                aria-label="Odśwież"
+                title="Odśwież"
+              >
+                ↻
+              </button>
+            )}
+          </div>
         )}
 
         {/* Mic OFF - click to enable */}

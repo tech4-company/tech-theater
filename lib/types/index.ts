@@ -8,6 +8,16 @@
 export type AppState = 'waiting' | 'listening' | 'processing' | 'responding';
 
 /**
+ * Stan intro wideo (wejściowego)
+ */
+export type IntroStatus = 'idle' | 'armed' | 'playing';
+
+/**
+ * Stan wideo końcowego
+ */
+export type OutroStatus = 'idle' | 'playing' | 'ended';
+
+/**
  * Wiadomość w konwersacji
  */
 export interface Message {
@@ -28,9 +38,9 @@ export interface Character {
   systemPrompt: string;      // Instrukcje jak ma rozmawiać
   voiceId: string;            // Legacy/optional (nieużywane w Realtime-only)
   videoSet: {
-    waiting: string;          // Ścieżka do waiting.mp4
-    listening: string;        // Ścieżka do listening.mp4
-    responding: string;       // Ścieżka do responding.mp4
+    waiting: string;          // Ścieżka do wideo waiting
+    listening: string;        // Ścieżka do wideo listening
+    responding: string;       // Ścieżka do wideo responding
   };
   llmConfig: {
     temperature: number;      // 0.7-1.0 dla kreatywności
@@ -76,6 +86,8 @@ export interface LLMChatResponse {
 export interface AppStore {
   // Stan aplikacji
   state: AppState;
+  introStatus: IntroStatus;
+  outroStatus: OutroStatus;
   
   // Dane konwersacji
   messages: Message[];
@@ -83,6 +95,8 @@ export interface AppStore {
   
   // Actions
   setState: (state: AppState) => void;
+  setIntroStatus: (status: IntroStatus) => void;
+  setOutroStatus: (status: OutroStatus) => void;
   addMessage: (message: Message) => void;
   setCurrentCharacter: (character: Character) => void;
   resetConversation: () => void;

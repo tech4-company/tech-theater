@@ -3,7 +3,7 @@
 // ============================================================================
 
 import { create } from 'zustand';
-import { AppStore, AppState, Message, Character } from './types';
+import { AppStore, AppState, Message, Character, IntroStatus, OutroStatus } from './types';
 
 /**
  * Główny store aplikacji używający Zustand
@@ -11,11 +11,15 @@ import { AppStore, AppState, Message, Character } from './types';
 export const useAppStore = create<AppStore>((set) => ({
   // Stan początkowy
   state: 'waiting',
+  introStatus: 'armed',
+  outroStatus: 'idle',
   messages: [],
   currentCharacter: null,
 
   // Actions
   setState: (state: AppState) => set({ state }),
+  setIntroStatus: (status: IntroStatus) => set({ introStatus: status }),
+  setOutroStatus: (status: OutroStatus) => set({ outroStatus: status }),
   
   addMessage: (message: Message) => 
     set((state) => ({ 

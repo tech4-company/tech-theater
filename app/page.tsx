@@ -64,6 +64,8 @@ export default function Home() {
             waitingVideo={currentCharacter.videoSet.waiting}
             listeningVideo={currentCharacter.videoSet.listening}
             respondingVideo={currentCharacter.videoSet.responding}
+            introVideo="/videos-in-out/ffb7d996-221c-482f-b1ba-f8cf6f83b336.mp4"
+            outroVideo="/videos-in-out/69410a3f-c422-4ac1-a1ac-5fb735ccded7.mp4"
             className="w-full h-full"
             onVideoChange={(state) => {
               console.log('Video changed to state:', state);

@@ -78,8 +78,8 @@ Assistant: „Widziałem amatorskiego „Kopciuszka” — i powiem wam: koń sk
   // Ścieżki do filmów animacji
   videoSet: {
     waiting: '/videos/waiting.mp4',
-    listening: '/videos/listening.mp4',
-    responding: '/videos/responding.mp4',
+    listening: '/videos/listening23.mp4',
+    responding: '/videos/responding23.mp4',
   },
   
   // Konfiguracja LLM

@@ -9,12 +9,14 @@
 
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { useAppStore } from '@/lib/store';
-import { AppState } from '@/lib/types';
+import { AppState, IntroStatus, OutroStatus } from '@/lib/types';
 
 interface VideoPlayerProps {
   waitingVideo: string;
   listeningVideo: string;
   respondingVideo: string;
+  introVideo?: string;
+  outroVideo?: string;
   className?: string;
   onVideoChange?: (state: AppState) => void;
   enableCrossfade?: boolean;
@@ -24,11 +26,37 @@ export function VideoPlayer({
   waitingVideo,
   listeningVideo,
   respondingVideo,
+  introVideo,
+  outroVideo,
   className = '',
   onVideoChange,
   enableCrossfade = true,
 }: VideoPlayerProps) {
   const state = useAppStore((s) => s.state);
+  const introStatus = useAppStore((s) => s.introStatus ?? 'idle');
+  const setIntroStatus = useAppStore((s) => s.setIntroStatus);
+  const outroStatus = useAppStore((s) => s.outroStatus ?? 'idle');
+  const setOutroStatus = useAppStore((s) => s.setOutroStatus);
+  const applyIntroStatus = useCallback(
+    (status: IntroStatus) => {
+      if (setIntroStatus) {
+        setIntroStatus(status);
+      } else {
+        useAppStore.setState({ introStatus: status });
+      }
+    },
+    [setIntroStatus],
+  );
+  const applyOutroStatus = useCallback(
+    (status: OutroStatus) => {
+      if (setOutroStatus) {
+        setOutroStatus(status);
+      } else {
+        useAppStore.setState({ outroStatus: status });
+      }
+    },
+    [setOutroStatus],
+  );
   const primaryVideoRef = useRef<HTMLVideoElement>(null);
   const secondaryVideoRef = useRef<HTMLVideoElement>(null);
   const [currentVideo, setCurrentVideo] = useState<string>(waitingVideo);
@@ -37,12 +65,29 @@ export function VideoPlayer({
   const [isTransitioning, setIsTransitioning] = useState(false);
   const videoCache = useRef<Map<string, HTMLVideoElement>>(new Map());
 
+  const isIntroActive = Boolean(introVideo) && (introStatus === 'armed' || introStatus === 'playing');
+  const isIntroPlaying = introStatus === 'playing';
+  const isIntroVideo = Boolean(introVideo) && currentVideo === introVideo;
+  const isOutroActive = Boolean(outroVideo) && (outroStatus === 'playing' || outroStatus === 'ended');
+  const isOutroPlaying = outroStatus === 'playing';
+  const isOutroVideo = Boolean(outroVideo) && currentVideo === outroVideo;
+
+  const getVideoType = useCallback((src: string) => {
+    const lower = src.toLowerCase();
+    if (lower.endsWith('.mov')) return 'video/quicktime';
+    if (lower.endsWith('.webm')) return 'video/webm';
+    if (lower.endsWith('.mp4')) return 'video/mp4';
+    return undefined;
+  }, []);
+
   // Enhanced preload wszystkich filmów z cache
   useEffect(() => {
     const videos = [
       { src: waitingVideo, state: 'waiting' },
       { src: listeningVideo, state: 'listening' },
       { src: respondingVideo, state: 'responding' },
+      ...(introVideo ? [{ src: introVideo, state: 'intro' }] : []),
+      ...(outroVideo ? [{ src: outroVideo, state: 'outro' }] : []),
     ];
     
     let loadedCount = 0;
@@ -101,10 +146,10 @@ export function VideoPlayer({
     return () => {
       videoCache.current.clear();
     };
-  }, [waitingVideo, listeningVideo, respondingVideo]);
+  }, [waitingVideo, listeningVideo, respondingVideo, introVideo, outroVideo]);
 
   // Smooth video transition with crossfade
-  const transitionToVideo = useCallback(async (newVideoSrc: string) => {
+  const transitionToVideo = useCallback(async (newVideoSrc: string, shouldPlay = true) => {
     if (newVideoSrc === currentVideo || isTransitioning) return;
 
     setIsTransitioning(true);
@@ -122,11 +167,15 @@ export function VideoPlayer({
       // Simple transition: just switch
       if (!enableCrossfade || !secondaryVideo) {
         setCurrentVideo(newVideoSrc);
-        await primaryVideo.play();
+        if (shouldPlay) {
+          await primaryVideo.play();
+        }
       } else {
         // Crossfade transition (optional, can be complex)
         setCurrentVideo(newVideoSrc);
-        await primaryVideo.play();
+        if (shouldPlay) {
+          await primaryVideo.play();
+        }
       }
     } catch (err) {
       console.warn('Video play error:', err);
@@ -144,28 +193,58 @@ export function VideoPlayer({
       responding: respondingVideo,
     };
 
-    const newVideo = videoMap[state];
+    const newVideo = isOutroActive && outroVideo
+      ? outroVideo
+      : isIntroActive && introVideo
+        ? introVideo
+        : videoMap[state];
+    if (!newVideo) return;
+
     if (newVideo !== currentVideo) {
       console.log(`Video transition: ${state} -> ${newVideo}`);
-      transitionToVideo(newVideo);
-      
+      const shouldPlay = isOutroActive ? isOutroPlaying : !isIntroActive || isIntroPlaying;
+      transitionToVideo(newVideo, shouldPlay);
+
       // Callback for parent
       if (onVideoChange) {
         onVideoChange(state);
       }
     }
-  }, [state, waitingVideo, listeningVideo, respondingVideo, currentVideo, transitionToVideo, onVideoChange]);
+  }, [
+    state,
+    waitingVideo,
+    listeningVideo,
+    respondingVideo,
+    introVideo,
+    outroVideo,
+    currentVideo,
+    transitionToVideo,
+    onVideoChange,
+    isIntroActive,
+    isIntroPlaying,
+    isOutroActive,
+    isOutroPlaying,
+  ]);
 
   // Autoplay and maintain loop
   useEffect(() => {
     const video = primaryVideoRef.current;
     if (!video || isLoading) return;
 
+    const shouldAutoplay = isOutroVideo ? isOutroPlaying : !isIntroVideo || isIntroPlaying;
+
     const playVideo = async () => {
       try {
         video.load();
-        await video.play();
-        console.log(`Playing video: ${currentVideo}`);
+        if (shouldAutoplay) {
+          await video.play();
+          console.log(`Playing video: ${currentVideo}`);
+        } else {
+          video.pause();
+          try {
+            video.currentTime = 0;
+          } catch {}
+        }
       } catch (err) {
         console.warn('Autoplay blocked or error:', err);
         // User needs to interact with page first
@@ -174,25 +253,44 @@ export function VideoPlayer({
 
     playVideo();
 
-    // Ensure loop continues
     const handleEnded = () => {
+      if (isIntroVideo && isIntroPlaying) {
+        applyIntroStatus('idle');
+        return;
+      }
+      if (isOutroVideo && isOutroPlaying) {
+        applyOutroStatus('ended');
+        return;
+      }
       video.play().catch(console.warn);
     };
 
     video.addEventListener('ended', handleEnded);
-    
+
     return () => {
       video.removeEventListener('ended', handleEnded);
     };
-  }, [currentVideo, isLoading]);
+  }, [
+    currentVideo,
+    isLoading,
+    isIntroVideo,
+    isIntroPlaying,
+    isOutroVideo,
+    isOutroPlaying,
+    applyIntroStatus,
+    applyOutroStatus,
+  ]);
 
   // Handle user interaction for autoplay
   const handleUserInteraction = useCallback(() => {
+    if (introStatus === 'armed' || outroStatus === 'ended') return;
     const video = primaryVideoRef.current;
     if (video && video.paused) {
       video.play().catch(console.warn);
     }
-  }, []);
+  }, [introStatus, outroStatus]);
+
+  const currentVideoType = getVideoType(currentVideo);
 
   return (
     <div 
@@ -219,12 +317,12 @@ export function VideoPlayer({
       <video
         ref={primaryVideoRef}
         className="w-full h-full object-cover"
-        loop
-        muted
+        loop={!isIntroVideo && !isOutroVideo}
+        muted={isIntroVideo ? introStatus !== 'playing' : isOutroVideo ? outroStatus !== 'playing' : true}
         playsInline
         key={currentVideo}
       >
-        <source src={currentVideo} type="video/mp4" />
+        <source src={currentVideo} type={currentVideoType} />
         Twoja przeglądarka nie obsługuje elementu video.
       </video>
 

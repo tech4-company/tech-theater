@@ -117,7 +117,7 @@ export async function POST(request: NextRequest) {
 
     const data = await response.json();
 
-    const responseSilenceMs = Math.floor(5000 + Math.random() * 2000);
+    const responseSilenceMs = Math.floor(3000 + Math.random() * 1000);
 
     // Return ephemeral token and session config
     return NextResponse.json({
@@ -141,7 +141,7 @@ export async function POST(request: NextRequest) {
           type: 'server_vad',
           threshold: 0.5,           // Sensitivity (0.0-1.0)
           prefix_padding_ms: 300,   // Audio before speech
-          silence_duration_ms: responseSilenceMs, // 5–7s ciszy przed odpowiedzią
+          silence_duration_ms: responseSilenceMs, // 3–4s ciszy przed odpowiedzią
         },
         temperature: resolvedCharacter.llmConfig.temperature,
         max_response_output_tokens: resolvedCharacter.llmConfig.maxTokens,
