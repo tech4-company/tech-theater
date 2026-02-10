@@ -19,6 +19,7 @@ interface UseRealtimeVoiceOptions {
   onTranscript?: (text: string, isFinal: boolean) => void;
   onResponse?: (text: string) => void;
   onResponseDone?: (response: any) => void;
+  onOutputAudioStopped?: (event: any) => void;
   onError?: (error: Error) => void;
 }
 
@@ -73,6 +74,7 @@ export function useRealtimeVoice({
   onTranscript,
   onResponse,
   onResponseDone,
+  onOutputAudioStopped,
   onError,
 }: UseRealtimeVoiceOptions): UseRealtimeVoiceReturn {
   const [isConnected, setIsConnected] = useState(false);
@@ -468,6 +470,13 @@ export function useRealtimeVoice({
           startSilenceDetection();
           break;
 
+        case 'output_audio_buffer.stopped':
+          if (DEBUG_REALTIME) {
+            console.log('[realtime] output_audio_buffer.stopped');
+          }
+          onOutputAudioStopped?.(message);
+          break;
+
         case 'response.audio.delta':
           if (DEBUG_REALTIME) {
             const size =
@@ -565,6 +574,7 @@ export function useRealtimeVoice({
     [
       onResponse,
       onResponseDone,
+      onOutputAudioStopped,
       onTranscript,
       resumeAudioContext,
       setMicHardware,

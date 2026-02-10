@@ -75,6 +75,11 @@ export function VoiceControlsRealtime() {
   const setOutroStatus = useAppStore((s) => s.setOutroStatus);
   const [assistantResponseCount, setAssistantResponseCount] = useState(0);
   const assistantResponseCountRef = useRef(0);
+  const [lastResponseDoneAt, setLastResponseDoneAt] = useState<number | null>(null);
+  const [lastAudioStoppedAt, setLastAudioStoppedAt] = useState<number | null>(null);
+  const lastResponseDoneAtRef = useRef<number | null>(null);
+  const lastAudioStoppedAtRef = useRef<number | null>(null);
+  const OUTRO_AUDIO_STOP_FALLBACK_MS = 1500;
   const applyIntroStatus = useCallback(
     (status: IntroStatus) => {
       if (setIntroStatus) {
@@ -145,8 +150,16 @@ export function VoiceControlsRealtime() {
     onResponseDone: (response) => {
       const status = response?.status;
       if (status === 'failed') return;
+      const now = Date.now();
+      lastResponseDoneAtRef.current = now;
+      setLastResponseDoneAt(now);
       assistantResponseCountRef.current += 1;
       setAssistantResponseCount(assistantResponseCountRef.current);
+    },
+    onOutputAudioStopped: () => {
+      const now = Date.now();
+      lastAudioStoppedAtRef.current = now;
+      setLastAudioStoppedAt(now);
     },
     onError: (error) => {
       console.error('Realtime API error:', error);
@@ -169,10 +182,18 @@ export function VoiceControlsRealtime() {
     if (isSessionActive && !wasSessionActiveRef.current) {
       assistantResponseCountRef.current = 0;
       setAssistantResponseCount(0);
+      lastResponseDoneAtRef.current = null;
+      lastAudioStoppedAtRef.current = null;
+      setLastResponseDoneAt(null);
+      setLastAudioStoppedAt(null);
     }
     if (!isSessionActive && wasSessionActiveRef.current) {
       assistantResponseCountRef.current = 0;
       setAssistantResponseCount(0);
+      lastResponseDoneAtRef.current = null;
+      lastAudioStoppedAtRef.current = null;
+      setLastResponseDoneAt(null);
+      setLastAudioStoppedAt(null);
     }
     wasSessionActiveRef.current = isSessionActive;
   }, [isSessionActive]);
@@ -200,11 +221,22 @@ export function VoiceControlsRealtime() {
     if (isSpeaking) return;
     if (!isSessionActive) return;
     if (pendingOutroTrigger.current) return;
+    const audioStoppedAfterResponse =
+      lastAudioStoppedAt !== null &&
+      lastResponseDoneAt !== null &&
+      lastAudioStoppedAt >= lastResponseDoneAt;
+    const fallbackReady =
+      lastResponseDoneAt !== null &&
+      Date.now() - lastResponseDoneAt >= OUTRO_AUDIO_STOP_FALLBACK_MS;
+
+    if (!audioStoppedAfterResponse && !fallbackReady) return;
     triggerOutro();
   }, [
     assistantResponseCount,
     isSpeaking,
     isSessionActive,
+    lastAudioStoppedAt,
+    lastResponseDoneAt,
     outroStatus,
     triggerOutro,
   ]);
