@@ -589,12 +589,6 @@ export function useRealtimeVoice({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           characterId: characterRef.current.id,
-          characterSnapshot: {
-            name: characterRef.current.name,
-            description: characterRef.current.description,
-            systemPrompt: characterRef.current.systemPrompt,
-            llmConfig: characterRef.current.llmConfig,
-          },
         }),
       });
 

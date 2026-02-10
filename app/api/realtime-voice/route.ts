@@ -6,47 +6,6 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { getCharacterById } from '@/lib/characters';
-import type { Character } from '@/lib/types';
-
-type CharacterSnapshot = {
-  name?: unknown;
-  description?: unknown;
-  systemPrompt?: unknown;
-  llmConfig?: {
-    temperature?: unknown;
-    maxTokens?: unknown;
-    model?: unknown;
-  };
-};
-
-function applyCharacterSnapshot(
-  base: Character,
-  snapshot: CharacterSnapshot | null | undefined,
-): Character {
-  if (!snapshot || typeof snapshot !== 'object') {
-    return base;
-  }
-
-  const merged: Character = {
-    ...base,
-    llmConfig: {
-      ...base.llmConfig,
-    },
-  };
-
-  if (typeof snapshot.name === 'string') merged.name = snapshot.name;
-  if (typeof snapshot.description === 'string') merged.description = snapshot.description;
-  if (typeof snapshot.systemPrompt === 'string') merged.systemPrompt = snapshot.systemPrompt;
-
-  const llm = snapshot.llmConfig;
-  if (llm && typeof llm === 'object') {
-    if (typeof llm.temperature === 'number') merged.llmConfig.temperature = llm.temperature;
-    if (typeof llm.maxTokens === 'number') merged.llmConfig.maxTokens = llm.maxTokens;
-    if (typeof llm.model === 'string') merged.llmConfig.model = llm.model;
-  }
-
-  return merged;
-}
 
 export async function POST(request: NextRequest) {
   try {
@@ -60,7 +19,7 @@ export async function POST(request: NextRequest) {
 
     // Parse request
     const body = await request.json();
-    const { characterId, characterSnapshot } = body;
+    const { characterId } = body;
 
     if (!characterId) {
       return NextResponse.json(
@@ -78,7 +37,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const resolvedCharacter = applyCharacterSnapshot(character, characterSnapshot);
+    const resolvedCharacter = character;
 
     console.log('Realtime API token request:', {
       characterId,
