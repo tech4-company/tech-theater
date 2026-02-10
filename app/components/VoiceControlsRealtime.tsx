@@ -123,8 +123,6 @@ export function VoiceControlsRealtime() {
         setState('processing');
       } else if (newState === 'speaking') {
         setState('responding');
-      } else if (newState === 'idle') {
-        setState('waiting');
       }
     },
     onTranscript: (text, isFinal) => {
@@ -203,6 +201,17 @@ export function VoiceControlsRealtime() {
       pendingIntroStart.current = true;
     }
   }, [introStatus]);
+
+  useEffect(() => {
+    if (realtimeState !== 'idle') return;
+    if (!isSessionActive) {
+      setState('waiting');
+      return;
+    }
+    if (!isSpeaking) {
+      setState('listening');
+    }
+  }, [isSessionActive, isSpeaking, realtimeState, setState]);
 
   const triggerOutro = useCallback(() => {
     if (outroStatus !== 'idle') return;

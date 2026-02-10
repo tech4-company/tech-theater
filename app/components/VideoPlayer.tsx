@@ -60,9 +60,6 @@ export function VideoPlayer({
   const primaryVideoRef = useRef<HTMLVideoElement>(null);
   const secondaryVideoRef = useRef<HTMLVideoElement>(null);
   const [currentVideo, setCurrentVideo] = useState<string>(waitingVideo);
-  const [activeLayer, setActiveLayer] = useState<'primary' | 'secondary'>('primary');
-  const [primarySrc, setPrimarySrc] = useState<string>(waitingVideo);
-  const [secondarySrc, setSecondarySrc] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [isTransitioning, setIsTransitioning] = useState(false);
@@ -70,21 +67,18 @@ export function VideoPlayer({
 
   const isIntroActive = Boolean(introVideo) && (introStatus === 'armed' || introStatus === 'playing');
   const isIntroPlaying = introStatus === 'playing';
+  const isIntroVideo = Boolean(introVideo) && currentVideo === introVideo;
   const isOutroActive = Boolean(outroVideo) && (outroStatus === 'playing' || outroStatus === 'ended');
   const isOutroPlaying = outroStatus === 'playing';
+  const isOutroVideo = Boolean(outroVideo) && currentVideo === outroVideo;
 
-  const getVideoMeta = useCallback(
-    (src?: string | null) => {
-      const isIntro = Boolean(introVideo) && src === introVideo;
-      const isOutro = Boolean(outroVideo) && src === outroVideo;
-      const shouldPlay = isOutro ? isOutroPlaying : !isIntro || isIntroPlaying;
-      const shouldFreezeOutro = isOutro && !isOutroPlaying;
-      const loop = !isIntro && !isOutro;
-      const muted = isIntro ? introStatus !== 'playing' : isOutro ? outroStatus !== 'playing' : true;
-      return { isIntro, isOutro, shouldPlay, shouldFreezeOutro, loop, muted };
-    },
-    [introStatus, introVideo, isIntroPlaying, isOutroPlaying, outroStatus, outroVideo],
-  );
+  const getVideoType = useCallback((src: string) => {
+    const lower = src.toLowerCase();
+    if (lower.endsWith('.mov')) return 'video/quicktime';
+    if (lower.endsWith('.webm')) return 'video/webm';
+    if (lower.endsWith('.mp4')) return 'video/mp4';
+    return undefined;
+  }, []);
 
   // Enhanced preload wszystkich filmów z cache
   useEffect(() => {
@@ -154,92 +148,41 @@ export function VideoPlayer({
     };
   }, [waitingVideo, listeningVideo, respondingVideo, introVideo, outroVideo]);
 
-  const waitForVideoReady = useCallback((video: HTMLVideoElement) => {
-    if (video.readyState >= 2) return Promise.resolve();
-    return new Promise<void>((resolve) => {
-      const handleReady = () => {
-        cleanup();
-        resolve();
-      };
-      const handleError = () => {
-        cleanup();
-        resolve();
-      };
-      const cleanup = () => {
-        video.removeEventListener('loadeddata', handleReady);
-        video.removeEventListener('canplay', handleReady);
-        video.removeEventListener('error', handleError);
-      };
-      video.addEventListener('loadeddata', handleReady, { once: true });
-      video.addEventListener('canplay', handleReady, { once: true });
-      video.addEventListener('error', handleError, { once: true });
-      setTimeout(handleReady, 1500);
-    });
-  }, []);
-
-  // Smooth video transition with double-buffering
+  // Smooth video transition with crossfade
   const transitionToVideo = useCallback(async (newVideoSrc: string, shouldPlay = true) => {
     if (newVideoSrc === currentVideo || isTransitioning) return;
 
     setIsTransitioning(true);
+    
+    const primaryVideo = primaryVideoRef.current;
+    const secondaryVideo = secondaryVideoRef.current;
 
-    const nextLayer = activeLayer === 'primary' ? 'secondary' : 'primary';
-    const nextVideo = nextLayer === 'primary' ? primaryVideoRef.current : secondaryVideoRef.current;
-    const previousVideo = activeLayer === 'primary' ? primaryVideoRef.current : secondaryVideoRef.current;
-    const meta = getVideoMeta(newVideoSrc);
-
-    if (!nextVideo) {
+    if (!primaryVideo) {
       setCurrentVideo(newVideoSrc);
       setIsTransitioning(false);
       return;
     }
 
     try {
-      if (nextLayer === 'primary') {
-        setPrimarySrc(newVideoSrc);
+      // Simple transition: just switch
+      if (!enableCrossfade || !secondaryVideo) {
+        setCurrentVideo(newVideoSrc);
+        if (shouldPlay) {
+          await primaryVideo.play();
+        }
       } else {
-        setSecondarySrc(newVideoSrc);
-      }
-
-      nextVideo.preload = 'auto';
-      nextVideo.playsInline = true;
-      nextVideo.loop = meta.loop;
-      nextVideo.muted = meta.muted;
-      if (nextVideo.src !== newVideoSrc) {
-        nextVideo.src = newVideoSrc;
-      }
-      nextVideo.load();
-
-      await waitForVideoReady(nextVideo);
-
-      if (meta.shouldFreezeOutro) {
-        nextVideo.pause();
-        try {
-          if (Number.isFinite(nextVideo.duration) && nextVideo.duration > 0) {
-            nextVideo.currentTime = Math.max(0, nextVideo.duration - 0.05);
-          }
-        } catch {}
-      } else if (shouldPlay && meta.shouldPlay) {
-        await nextVideo.play();
-      } else {
-        nextVideo.pause();
-        try {
-          nextVideo.currentTime = 0;
-        } catch {}
-      }
-
-      setActiveLayer(nextLayer);
-      setCurrentVideo(newVideoSrc);
-
-      if (previousVideo && !previousVideo.paused) {
-        previousVideo.pause();
+        // Crossfade transition (optional, can be complex)
+        setCurrentVideo(newVideoSrc);
+        if (shouldPlay) {
+          await primaryVideo.play();
+        }
       }
     } catch (err) {
       console.warn('Video play error:', err);
     } finally {
       setIsTransitioning(false);
     }
-  }, [activeLayer, currentVideo, getVideoMeta, isTransitioning, waitForVideoReady]);
+  }, [currentVideo, isTransitioning, enableCrossfade]);
 
   // Zmiana filmu na podstawie stanu
   useEffect(() => {
@@ -283,15 +226,13 @@ export function VideoPlayer({
     isOutroPlaying,
   ]);
 
-  const activeVideoRef = activeLayer === 'primary' ? primaryVideoRef : secondaryVideoRef;
-  const { isIntro: isIntroVideo, isOutro: isOutroVideo } = getVideoMeta(currentVideo);
-
   // Autoplay and maintain loop
   useEffect(() => {
-    const video = activeVideoRef.current;
+    const video = primaryVideoRef.current;
     if (!video || isLoading) return;
 
-    const { shouldPlay, shouldFreezeOutro } = getVideoMeta(currentVideo);
+    const shouldAutoplay = isOutroVideo ? isOutroPlaying : !isIntroVideo || isIntroPlaying;
+    const shouldFreezeOutro = isOutroVideo && !isOutroPlaying;
 
     const playVideo = async () => {
       try {
@@ -346,26 +287,26 @@ export function VideoPlayer({
       video.removeEventListener('ended', handleEnded);
     };
   }, [
-    activeVideoRef,
     currentVideo,
     isLoading,
+    isIntroVideo,
+    isIntroPlaying,
+    isOutroVideo,
+    isOutroPlaying,
     applyIntroStatus,
     applyOutroStatus,
-    getVideoMeta,
-    isIntroPlaying,
-    isOutroPlaying,
-    isIntroVideo,
-    isOutroVideo,
   ]);
 
   // Handle user interaction for autoplay
   const handleUserInteraction = useCallback(() => {
     if (introStatus === 'armed' || outroStatus === 'ended') return;
-    const video = activeVideoRef.current;
+    const video = primaryVideoRef.current;
     if (video && video.paused) {
       video.play().catch(console.warn);
     }
-  }, [activeVideoRef, introStatus, outroStatus]);
+  }, [introStatus, outroStatus]);
+
+  const currentVideoType = getVideoType(currentVideo);
 
   return (
     <div 
@@ -391,29 +332,23 @@ export function VideoPlayer({
       {/* Primary Video */}
       <video
         ref={primaryVideoRef}
-        className={`absolute inset-0 w-full h-full object-cover ${
-          activeLayer === 'primary' ? 'opacity-100' : 'opacity-0'
-        } ${enableCrossfade ? 'transition-opacity duration-300' : ''}`}
-        loop={getVideoMeta(primarySrc).loop}
-        muted={getVideoMeta(primarySrc).muted}
+        className="w-full h-full object-cover"
+        loop={!isIntroVideo && !isOutroVideo}
+        muted={isIntroVideo ? introStatus !== 'playing' : isOutroVideo ? outroStatus !== 'playing' : true}
         playsInline
-        preload="auto"
-        src={primarySrc}
+        key={currentVideo}
       >
+        <source src={currentVideo} type={currentVideoType} />
         Twoja przeglądarka nie obsługuje elementu video.
       </video>
 
-      {/* Secondary Video (double-buffered) */}
+      {/* Secondary Video (for crossfade - hidden for now) */}
       <video
         ref={secondaryVideoRef}
-        className={`absolute inset-0 w-full h-full object-cover ${
-          activeLayer === 'secondary' ? 'opacity-100' : 'opacity-0'
-        } ${enableCrossfade ? 'transition-opacity duration-300' : ''}`}
-        loop={getVideoMeta(secondarySrc).loop}
-        muted={getVideoMeta(secondarySrc).muted}
+        className="hidden"
+        loop
+        muted
         playsInline
-        preload="auto"
-        src={secondarySrc ?? undefined}
       />
     </div>
   );
