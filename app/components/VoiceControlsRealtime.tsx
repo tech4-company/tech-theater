@@ -204,17 +204,21 @@ export function VoiceControlsRealtime() {
 
   useEffect(() => {
     if (realtimeState !== 'idle') return;
+    // Don't override app state while outro is active
+    if (outroStatus !== 'idle') return;
     if (!isSessionActive) {
-      setState('waiting');
+      // Keep visual fallback on listening video to avoid flashes to waiting.mp4.
+      setState('listening');
       return;
     }
     if (!isSpeaking) {
       setState('listening');
     }
-  }, [isSessionActive, isSpeaking, realtimeState, setState]);
+  }, [isSessionActive, isSpeaking, outroStatus, realtimeState, setState]);
 
   const triggerOutro = useCallback(() => {
     if (outroStatus !== 'idle') return;
+    console.log('[Outro] triggerOutro fired! Setting outroStatus=playing');
     pendingOutroTrigger.current = true;
     applyIntroStatus('idle');
     applyOutroStatus('playing');
@@ -225,6 +229,7 @@ export function VoiceControlsRealtime() {
   }, [applyIntroStatus, applyOutroStatus, endSession, outroStatus, setMicrophoneEnabled]);
 
   useEffect(() => {
+    console.log(`[Outro] check: count=${assistantResponseCount}, speaking=${isSpeaking}, session=${isSessionActive}, outroStatus=${outroStatus}, pending=${pendingOutroTrigger.current}`);
     if (outroStatus !== 'idle') return;
     if (assistantResponseCount < 4) return;
     if (isSpeaking) return;
@@ -238,6 +243,7 @@ export function VoiceControlsRealtime() {
       lastResponseDoneAt !== null &&
       Date.now() - lastResponseDoneAt >= OUTRO_AUDIO_STOP_FALLBACK_MS;
 
+    console.log(`[Outro] timing: audioStopped=${audioStoppedAfterResponse}, fallback=${fallbackReady}`);
     if (!audioStoppedAfterResponse && !fallbackReady) return;
     triggerOutro();
   }, [
