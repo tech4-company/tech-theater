@@ -85,7 +85,7 @@ Assistant: „Widziałem amatorskiego „Kopciuszka” — i powiem wam: koń sk
   // Konfiguracja LLM
   llmConfig: {
     temperature: 0.8,        // Kreatywność (0.7-1.0)
-    maxTokens: 500,          // Więcej tokenów dla pełnych odpowiedzi
+    maxTokens: 900,          // Więcej tokenów, żeby nie ucinało końcówki
     model: 'gpt-5.2',        // Najnowszy model OpenAI (11.12.2025)
   },
 };
