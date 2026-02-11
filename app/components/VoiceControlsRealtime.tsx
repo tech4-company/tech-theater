@@ -47,15 +47,6 @@ const PlayIcon = () => (
   </svg>
 );
 
-const VideoPlayIcon = () => (
-  <svg width="28" height="28" viewBox="0 0 24 24" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
-    {/* Neutralny znak - podobny do zielonego przycisku */}
-    <circle cx="12" cy="12" r="4.5" fill="currentColor" />
-    <circle cx="18" cy="6" r="2" fill="currentColor" opacity="0.8" />
-    <path d="M4 18L8.5 12.5L11.5 15.5L15 11.5L20 18H4Z" fill="currentColor" opacity="0.85" />
-  </svg>
-);
-
 const SpeakingIcon = () => (
   <svg width="28" height="28" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
     {/* Ognisko / płomień */}
@@ -197,12 +188,6 @@ export function VoiceControlsRealtime() {
   }, [isSessionActive]);
 
   useEffect(() => {
-    if (introStatus === 'armed' && !pendingIntroStart.current) {
-      pendingIntroStart.current = true;
-    }
-  }, [introStatus]);
-
-  useEffect(() => {
     if (realtimeState !== 'idle') return;
     // Don't override app state while outro is active
     if (outroStatus !== 'idle') return;
@@ -289,13 +274,8 @@ export function VoiceControlsRealtime() {
     }
 
     pendingIntroStart.current = true;
-    applyIntroStatus('armed');
-  }, [applyIntroStatus, isConnected]);
-
-  const handlePlayIntro = useCallback(() => {
-    if (introStatus !== 'armed') return;
     applyIntroStatus('playing');
-  }, [applyIntroStatus, introStatus]);
+  }, [applyIntroStatus, isConnected]);
 
   useEffect(() => {
     if (!pendingIntroStart.current) return;
@@ -337,7 +317,7 @@ export function VoiceControlsRealtime() {
     return 'mic-off';
   })();
 
-  const isIntroActive = introStatus === 'armed' || introStatus === 'playing';
+  const isIntroActive = introStatus === 'playing';
   const isOutroActive = outroStatus === 'playing' || outroStatus === 'ended';
 
   // Show error if critical
@@ -394,25 +374,6 @@ export function VoiceControlsRealtime() {
             >
               <PlayIcon />
             </button>
-            {introStatus === 'armed' && (
-              <button
-                onClick={handlePlayIntro}
-                className="
-                  w-16 h-16 
-                  bg-emerald-500 hover:bg-emerald-600 
-                  text-white
-                  flex items-center justify-center
-                  transition-all duration-200
-                  shadow-lg hover:shadow-xl
-                  focus:outline-none focus:ring-4 focus:ring-emerald-300
-                  overflow-hidden
-                "
-                aria-label="Wejście"
-                style={grassShapeStyle}
-              >
-                <VideoPlayIcon />
-              </button>
-            )}
             {outroStatus === 'ended' && (
               <button
                 onClick={() => {

@@ -66,6 +66,7 @@ const AUDIO_START_GRACE_MS = 500; // Wait a bit for audio to start
 const AUDIO_START_FALLBACK_MS = 6000; // If no audio energy, end speaking
 const FALLBACK_VOICE = 'alloy';
 const AUDIO_CHECK_INTERVAL_MS = 50; // How often to check audio level
+const OUTPUT_GAIN = 1.35; // Slight boost to match video loudness
 const DEBUG_REALTIME = true;
 
 export function useRealtimeVoice({
@@ -93,6 +94,7 @@ export function useRealtimeVoice({
   // Audio analysis for detecting when model stops speaking
   const audioContextRef = useRef<AudioContext | null>(null);
   const analyserRef = useRef<AnalyserNode | null>(null);
+  const outputGainRef = useRef<GainNode | null>(null);
   const silenceCheckIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const silenceStartRef = useRef<number | null>(null);
   const responseAudioDoneRef = useRef(false); // True when OpenAI finished sending audio
@@ -331,6 +333,7 @@ export function useRealtimeVoice({
         } catch {}
         audioContextRef.current = null;
         analyserRef.current = null;
+        outputGainRef.current = null;
       }
 
       if (remoteAudioRef.current) {
@@ -690,6 +693,8 @@ export function useRealtimeVoice({
       // Remote audio → <audio> element + AudioContext for analysis
       const audioEl = new Audio();
       audioEl.autoplay = true;
+      audioEl.muted = true;
+      audioEl.volume = 0;
       audioEl.onloadedmetadata = () => {
         if (DEBUG_REALTIME) {
           console.log('[realtime] audio loaded metadata', {
@@ -792,9 +797,13 @@ export function useRealtimeVoice({
             const source = audioCtx.createMediaStreamSource(stream);
             const analyser = audioCtx.createAnalyser();
             analyser.fftSize = 256;
+            const gainNode = audioCtx.createGain();
+            gainNode.gain.value = OUTPUT_GAIN;
             source.connect(analyser);
-            // Don't connect to destination - we already have <audio> element playing
+            source.connect(gainNode);
+            gainNode.connect(audioCtx.destination);
             analyserRef.current = analyser;
+            outputGainRef.current = gainNode;
 
             console.log('Audio analyser set up for silence detection');
           } catch (err) {

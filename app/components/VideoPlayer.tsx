@@ -17,6 +17,7 @@ interface VideoPlayerProps {
   listeningVideo: string;
   respondingVideo: string;
   introVideo?: string;
+  introImage?: string;
   outroVideo?: string;
   className?: string;
   onVideoChange?: (state: AppState) => void;
@@ -28,6 +29,7 @@ export function VideoPlayer({
   listeningVideo,
   respondingVideo,
   introVideo,
+  introImage,
   outroVideo,
   className = '',
   onVideoChange,
@@ -88,10 +90,11 @@ export function VideoPlayer({
   // ---------------------------------------------------------------------------
   // Derived flags
   // ---------------------------------------------------------------------------
-  const isIntroActive =
-    Boolean(introVideo) && (introStatus === 'armed' || introStatus === 'playing');
+  const isIntroArmed = introStatus === 'armed';
+  const isIntroActive = Boolean(introVideo) && introStatus === 'playing';
   const isIntroPlaying = introStatus === 'playing';
   const isIntroVideo = Boolean(introVideo) && currentVideo === introVideo;
+  const showIntroImage = Boolean(introImage) && isIntroArmed;
   const isOutroActive =
     Boolean(outroVideo) && (outroStatus === 'playing' || outroStatus === 'ended');
   const isOutroPlaying = outroStatus === 'playing';
@@ -438,7 +441,7 @@ export function VideoPlayer({
       onClick={handleUserInteraction}
     >
       {/* Loading overlay */}
-      {isLoading && (
+      {isLoading && !showIntroImage && (
         <div className="absolute inset-0 flex items-center justify-center bg-gray-900 z-20">
           <div className="text-center">
             <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-white mx-auto mb-4" />
@@ -452,6 +455,17 @@ export function VideoPlayer({
           <div className="text-center p-6 bg-gray-900 rounded-lg text-3xl text-red-500">
             ⚠️
           </div>
+        </div>
+      )}
+
+      {showIntroImage && (
+        <div className="absolute inset-0 z-10">
+          <img
+            src={introImage}
+            alt="Intro"
+            className="w-full h-full object-cover"
+            draggable={false}
+          />
         </div>
       )}
 
